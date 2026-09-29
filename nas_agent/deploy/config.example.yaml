@@ -1,0 +1,15 @@
+# ~/.config/nas-mcp/config.yaml on the NAS (install_nas.sh writes this for you).
+omics_root: /vol1/1000/omics              # dataset home; registry nas_path values are relative to this
+allowed_roots:                            # the ONLY places nas-mcp may read/write
+  - /vol1/1000/omics
+  - /vol1/1000/Downloads
+registry: ~/nas-mcp/src/datasets/registry.yaml
+state_dir: ~/.local/state/nas-mcp         # plans, jobs, logs
+aria2:
+  url: http://127.0.0.1:6800/jsonrpc
+  secret_file: ~/.config/nas-mcp/aria2.secret
+tokens:
+  huggingface_file: ~/.config/nas-mcp/hf.token   # only for gated HF repos; you create it (chmod 600)
+free_space_reserve_pct: 5                 # refuse plans that would leave less than this free
+confirm_above_gb: 100                     # plans larger than this need explicit confirm_large=true
+connections_per_file: 8

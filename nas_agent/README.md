@@ -1,109 +1,136 @@
-# NAS Agent Toolkit — fnOS @ 192.168.86.28
+# NAS Agent Toolkit: omics dataset downloads to the fnOS NAS
 
-Design for Claude Code **skills** + an **MCP server** that let an agent inspect NAS storage and
-submit large download jobs into a chosen NAS folder. Status: **design + probe script**; the
-server is built after `probe_nas.sh` results confirm what the NAS has installed.
+Claude Code skills and an MCP server (`nas-mcp`) that plan, queue, track and verify large
+public-omics downloads **on the NAS** (fnOS, Debian 12, `192.168.86.28`) into folders you choose.
+Transfers run in an aria2 daemon, so they resume after interruptions and keep going after Claude
+or the laptop goes to sleep.
 
-## 0. Why a probe first
-The NAS is on a private home LAN (`192.168.86.28`), unreachable from cloud sessions. Discovery
-must run from a machine on the same Wi-Fi:
+```
+Claude Code (laptop) ──stdio over SSH (key auth)──► nas-mcp (Python, NAS user `agent`)
+                                                        ├─ connectors: PRIDE · PDC/CPTAC · S3 · Hugging Face · Zenodo
+                                                        │              CELLxGENE · MassIVE · Synapse · URL lists
+                                                        ├─ registry.yaml → access-policy gate
+                                                        └─ aria2 JSON-RPC (127.0.0.1, secret) ─► /vol1/…/omics/<dataset>/
+```
 
+## Layout
+| Path | What |
+|---|---|
+| `server/` | `nas-mcp` Python package (MCP SDK v1 and v2 compatible), tests |
+| `datasets/registry.yaml` | 24 sources, each with an access policy, connector, defaults and target folder |
+| `skills/` | Claude Code skills: `omics-dataset-fetch`, `nas-download`, `nas-storage` |
+| `deploy/` | `deploy_from_laptop.sh`, `install_nas.sh`, aria2 container, `install_skills.sh`, example config |
+| `probe_nas.sh` | Read-only NAS inventory (optional, for troubleshooting) |
+
+## Setup (about 15 minutes, once)
+Run from a laptop on the home Wi-Fi (macOS, Linux, or Windows via WSL/Git Bash).
+
+1. **fnOS web UI** (`http://192.168.86.28:5666`):
+   - Create a user such as `agent`. It doesn't need to be an admin.
+   - Create or choose a shared folder for datasets (e.g. `omics` → `/vol1/1000/omics`) and give
+     `agent` read/write.
+   - SSH is already enabled.
+2. **SSH key login.** The MCP connection can't type passwords.
+   `ssh-keygen -t ed25519` (if you have no key), then `ssh-copy-id agent@192.168.86.28`.
+3. **Deploy and install:**
+   ```bash
+   nas_agent/deploy/deploy_from_laptop.sh agent@192.168.86.28 --omics-root /vol1/1000/omics \
+       [--allow /vol1/1000/Downloads] [--with-synapse] [--install-uv]
+   ```
+   - This uploads the code to `~/nas-mcp/src` and creates a venv.
+   - It writes `~/.config/nas-mcp/config.yaml` and a random aria2 secret (mode 600).
+   - It also generates the aria2 container files.
+   - Re-running upgrades the code and keeps your config.
+   - Add `--install-uv` if fnOS lacks `python3-venv`.
+   - Add `--no-docker` to use a host `aria2c` via a systemd user service instead of the container.
+4. **Start aria2 once** (the command is printed by the installer; `sudo` is needed unless `agent` is in
+   the docker group):
+   ```bash
+   ssh -t agent@192.168.86.28 'sudo docker compose -f ~/nas-mcp/aria2/docker-compose.yml up -d --build'
+   ssh agent@192.168.86.28 '~/nas-mcp/.venv/bin/nas-mcp --check'   # config / registry / folders / aria2
+   ```
+5. **Connect Claude Code and install the skills** on the laptop:
+   ```bash
+   claude mcp add nas --scope user -- ssh -o BatchMode=yes agent@192.168.86.28 /home/agent/nas-mcp/.venv/bin/nas-mcp
+   nas_agent/deploy/install_skills.sh
+   ```
+   (Use the exact path printed by the installer.)
+6. **Credentials** (only for sources that need them; they stay on the NAS):
+   - Synapse (AMP-AD, UKB-PPP pQTL): as `agent`, run `~/nas-mcp/.venv/bin/synapse config` with a
+     personal access token.
+   - Gated Hugging Face repos: put a read token in `~/.config/nas-mcp/hf.token` (chmod 600).
+   - PDC, PRIDE, S3 open data, Zenodo and CELLxGENE need no login.
+
+## Using it
+Ask Claude in plain language. The skills drive the tools:
+- "Get the SEA-AD MTG snRNA-seq h5ad files onto the NAS"
+- "Download CPTAC CCRCC PDC000127 protein tables"
+- "Pull PXD046444 raw files into proteomics/benchmarks"
+- "What Parkinson's single-cell datasets are on CELLxGENE, and how big?"
+- "How full is the NAS?"
+- "Is the Tahoe download done?"
+
+Every download follows the same sequence:
+1. Plan: list the files, total size, licence and policy. Nothing is downloaded yet.
+2. You confirm.
+3. Submit: free-space check, skip files already present, queue each file with its checksum.
+4. Check status.
+5. Verify: writes `PROVENANCE.md` and `files.tsv` in the dataset folder, and a row in
+   `<omics root>/CATALOG.tsv`.
+
+### MCP tools
+| Tool | Purpose |
+|---|---|
+| `nas_storage_overview`, `nas_list_folders`, `nas_folder_usage`, `nas_create_folder` | Storage (allowlisted roots only; no delete tool exists) |
+| `nas_catalog_search`, `nas_browse_source` | Find datasets; peek at S3 sub-folders / PDC data categories |
+| `nas_plan_dataset`, `nas_plan_urls` | Build a plan (listing only) → `plan_id` |
+| `nas_submit_plan` | Queue it. Enforces the free-space reserve, `confirm_large` (>100 GB) and `policy_ack` for DUA/summary-only sources |
+| `nas_list_jobs`, `nas_job_status`, `nas_control_job` | Track, pause, resume, cancel (optionally purge partial files only) |
+| `nas_verify_job` | Sizes and presence; `deep=true` re-hashes in the background; writes provenance |
+| `nas_downloader_health` | aria2 reachability, version, queue stats |
+
+### Access policies (from `registry.yaml`, enforced in code)
+| Policy | Sources | Behaviour |
+|---|---|---|
+| `allowed` | CPTAC/PDC, PRIDE, MassIVE, HPA, CELLxGENE (census and per-dataset), SEA-AD, Allen Brain Cell Atlas, HCA, single-cell MS, Tahoe-100M, JUMP Cell Painting, scPerturb, DepMap, generic open S3/HF/Zenodo/URLs | Plan → confirm → download |
+| `summary_only` | UKB-PPP pQTL summary stats (Synapse syn51365301) | Submit requires `policy_ack` |
+| `check_dua` | AMP-AD (Synapse), AMP-PD/PPMI, ADNI | Submit requires your own DUA statement. AMP-PD and ADNI have no automated connector (Terra/BigQuery, LONI) |
+| `forbidden` | UK Biobank participant-level Olink (UKB-RAP), GNPC SomaScan (AD Workbench) | Refused; analyse in the enclave |
+
+Guards:
+- Every path is resolved (symlinks included) and must sit inside `allowed_roots`.
+- Remote file names are sanitised.
+- aria2 RPC is bound to localhost and uses a secret.
+- Tokens are never written to plan files.
+- aria2's session folder is mode 700.
+
+## Development and tests
 ```bash
-# 1. fnOS web UI (http://192.168.86.28:5666) → Settings → SSH → enable (off by default)
-# 2. From a laptop on the same Wi-Fi:
-ssh <admin-user>@192.168.86.28 'bash -s' < nas_agent/probe_nas.sh > nas_probe.txt
-```
-The probe is read-only: OS/fnOS version, disks and RAID/Btrfs, `/volN` layout, SSH config,
-listening ports, Docker, Python, transfer tools (aria2c/rsync/rclone/ascp/sra-tools) and outbound reach
-to EBI/PRIDE/NCBI/PyPI/Docker Hub.
-
-Known fnOS facts it confirms: Debian 12 base; storage spaces mount at `/vol1`, `/vol2`…;
-web UI on 5666; Docker data root typically `/vol1/docker`.
-
-## 1. Architecture (recommended)
-
-```
-Claude Code (laptop: Desktop app or `claude remote-control`)
-        │  MCP over stdio, tunnelled through SSH (key auth, no new open ports)
-        ▼
-nas-mcp  (Python, runs ON the NAS as unprivileged user `agent`)
-        │  JSON-RPC on 127.0.0.1:6800 (rpc-secret)
-        ▼
-aria2 daemon (Docker container, restart=always)  ──► /vol1/<share>/<selected folder>
+cd nas_agent/server && uv venv && uv pip install -e '.[test]'
+pytest                                       # unit + real-aria2 end-to-end (needs aria2c) + MCP stdio protocol
+NAS_MCP_LIVE=1 pytest -m live                # real APIs + three small real downloads, checksum-verified
 ```
 
-Design choices:
-- **Jobs run on the NAS, not the laptop.** A 200 GB download survives the laptop sleeping and
-  Claude sessions ending. The agent only submits and checks jobs.
-- **aria2** as the engine: resumable, multi-connection HTTP/FTP/SFTP, BitTorrent/Metalink,
-  built-in checksum checks, and a JSON-RPC API. Running it in Docker keeps fnOS system updates
-  from wiping apt-installed packages.
-- **stdio over SSH** (`ssh agent@nas python server.py`): nothing listens on the LAN except SSH.
-  Registered with:
-  `claude mcp add nas -- ssh agent@192.168.86.28 /home/agent/nas-mcp/.venv/bin/python /home/agent/nas-mcp/server.py`
-- **Least privilege.** Create a dedicated fnOS user `agent` with write access only to the target
-  shares (for example, `/vol1/1000/Downloads` and `/vol1/1000/Datasets`). Don't give it root or admin rights.
+Tested in the build environment:
+- 38 offline and end-to-end tests pass on MCP SDK 2.2.0 and 1.30.0, plus 7 live tests.
+- Live listings: PRIDE, PDC, SEA-AD S3, Tahoe-100M, CELLxGENE, scPerturb/Zenodo.
+- Real verified downloads: SEA-AD S3 (MD5), Hugging Face (SHA-256) and PRIDE over HTTPS.
+- The installer runs in both Docker and no-Docker modes, and `nas-mcp --check` passes.
 
-## 2. MCP server — `nas-mcp` tool surface
+**Not yet exercised:**
+- Running on the actual fnOS box.
+- Building the aria2 container (no Docker daemon was available; the Compose file validates).
+- MassIVE's FTP walk (no FTP access; unit-tested with a fake server).
+- The Synapse CLI path (needs your token).
 
-| Tool | Purpose | Guardrails |
-|---|---|---|
-| `storage_overview()` | Capacity/free/used per `/volN`, RAID/Btrfs state | read-only |
-| `list_folders(path, depth=1)` | Browse allowed roots so the user can pick a destination | allowlisted roots only; `realpath` check blocks `..`/symlink escape |
-| `folder_usage(path)` | Size + file count of a folder, largest children | read-only, timeout |
-| `create_folder(path)` | Make a destination folder | inside allowlist; no overwrite |
-| `preflight_download(urls, dest)` | HEAD each URL → size, resumability, filename; compare to free space | refuses if size > free − reserve (for example 5%) |
-| `submit_download(urls, dest, checksum?, connections=8, label?)` | Queue in aria2 (`aria2.addUri` with `dir`), return job id | runs preflight first; ask for confirmation above a size threshold |
-| `submit_manifest(manifest_path \| rows, dest)` | Bulk-queue a TSV/JSON list (url, subpath, md5/sha256) | same checks per row; one batch id |
-| `job_status(id?)` / `list_jobs(state)` | Progress, speed, ETA, errors | read-only |
-| `pause_job` / `resume_job` / `cancel_job(id)` | Control | cancel keeps partial file unless `purge=true` |
-| `verify_files(dest, checksums)` | Post-download md5/sha256 check → report | read-only |
-| `job_log(since)` | Append-only JSONL audit (`~/.nas-mcp/jobs.jsonl`) | — |
-
-Deliberately **not** exposed: delete/move of existing data, sudo, arbitrary shell. Add those only
-behind an explicit confirm flag if ever needed.
-
-MCP **resources**: `nas://volumes`, `nas://jobs/active`. MCP **prompt**: `download-to-nas`.
-
-## 3. Claude Code skills (layered on the MCP tools)
-
-| Skill | Trigger | Workflow |
-|---|---|---|
-| **`nas-download`** | "download X to the NAS", "save this dataset to …" | resolve folder (list → user picks or confirm) → `preflight` → show size/ETA/free space → `submit` → `send_later` check-in → `verify_files` → summary |
-| **`nas-storage`** | "how full is the NAS", "what's using space" | `storage_overview` + `folder_usage` → ranked report, warn at >80% |
-| **`omics-dataset-fetch`** | "get PXD0xxxxx", "pull CPTAC / SEA-AD / Tahoe-100M…" | registry lookup → **access-policy gate** → manifest + size preflight → `submit_manifest` → verify checksums → `PROVENANCE.md` + `CATALOG.tsv`. Spec: `skills/omics-dataset-fetch/SKILL.md` |
-| **`nas-health`** | "check the NAS", weekly routine | SMART, RAID/Btrfs state, temps, Docker container health (read-only) |
-| **`nas-upload`** (optional) | "push these results to the NAS" | `rsync -aP --partial` from laptop to a chosen folder over SSH |
-
-`omics-dataset-fetch` is where this becomes a real research tool. MS raw-file datasets are often
-100 GB–1 TB, and resumable, checksum-verified NAS-side downloads with provenance notes are what
-make them reusable later.
-
-## 3b. Dataset coverage and access tiers
-`datasets/registry.yaml` lists 19 sources. Each has a `local_download` policy that the skill enforces:
-
-| Tier | Sources | What reaches the NAS |
-|---|---|---|
-| **allowed** (open) | CPTAC/PDC, PRIDE, MassIVE, HPA, CELLxGENE Census, SEA-AD, Allen Brain Cell Atlas, HCA, single-cell MS proteomics, Tahoe-100M, JUMP Cell Painting, scPerturb, DepMap | Full files (filtered to a sensible subset) |
-| **summary_only** | UKB-PPP pQTL summary stats (Synapse syn51365301) | Summary statistics + metadata |
-| **check_dua** | AMP-AD Knowledge Portal, AMP-PD (incl. PPMI Olink/SomaScan), ADNI | Only after the user confirms the DUA allows copies on a personal device |
-| **forbidden** | UK Biobank participant-level Olink (UKB-RAP), GNPC SomaScan (AD Workbench) | Nothing. Analysis stays in the enclave; only exported summary results |
-
-Additional connectors this needs in `nas-mcp` (run in one "fetcher" Docker image on the NAS):
-`fetch_s3(prefix, include)` (aws CLI, no-sign-request) · `fetch_synapse(syn_id)` (synapseclient)
-· `fetch_hf(repo, allow_patterns)` (huggingface-cli) · `fetch_pdc(study_id, file_types)` (PDC
-GraphQL) · `fetch_pride(accession, patterns)` · `catalog_search(query)` (reads the registry).
-
-## 4. Build plan (after the probe)
-1. **Foundation:** enable SSH; create `agent` user + SSH key; choose allowlisted roots; start aria2
-   container bound to `127.0.0.1:6800` with an `rpc-secret`.
-2. **Core:** `nas-mcp/server.py` (Python `mcp` SDK, venv on NAS) with the tools above + unit
-   tests for path-guarding and preflight; register via `claude mcp add`.
-3. **Output:** `SKILL.md` files for `nas-download`, `nas-storage`, `omics-dataset-fetch`;
-   end-to-end test: small file → large file (resume after container restart) → checksum verify.
-
-## 5. Security notes
-- Don't port-forward 5666, 22 or 6800 to the internet. For remote access, use a VPN (for example, Tailscale or WireGuard).
-- aria2 RPC listens on localhost only and always uses `rpc-secret`.
-- Treat URLs and manifests as untrusted input. The server validates schemes (http/https/ftp/sftp/magnet)
-  and never passes them to a shell.
+## Known limits
+- PDC signed URLs last about a week. If a PDC job stalls with HTTP 4xx, re-plan and submit again;
+  finished files are skipped.
+- PRIDE sizes are estimates. Integrity comes from PRIDE's SHA-1 checksums, which aria2 checks
+  (confirmed against a real 23 MB PXD046444 file).
+- S3 ETags equal the file's MD5 only for some objects (never for multipart or KMS-encrypted ones), so
+  they are advisory: they never fail a download, and deep verify reports `etag_differs` as a note.
+- Synapse jobs run the `synapse` CLI in the background. Total size isn't known up front, so only the
+  free-space reserve applies.
+- Browsing is limited to what each source's API exposes; CELLxGENE filtering matches labels
+  (disease / tissue / assay / organism / cell_type).

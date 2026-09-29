@@ -1,61 +1,95 @@
 ---
 name: omics-dataset-fetch
-description: Fetch public or DUA-governed omics datasets (CPTAC/PDC, PRIDE, MassIVE, UKB-PPP pQTL summary stats, AMP-AD, ADNI, CELLxGENE, SEA-AD, Allen Brain Cell Atlas, HCA, Tahoe-100M, JUMP Cell Painting, scPerturb, DepMap) onto the home NAS into a chosen folder, with access-policy checks, size preflight, checksum verification and provenance notes. Triggers on "download dataset to NAS", "get PXD…", "pull CPTAC", "fetch SEA-AD", "save Tahoe-100M", "UKB-PPP", "GNPC", "AMP-PD", "single-cell atlas to NAS".
+description: Download public or DUA-governed omics datasets onto the home NAS (fnOS) with access-policy checks, size preflight, resumable aria2 transfers, checksum verification and provenance notes. Covers CPTAC/PDC, PRIDE/ProteomeXchange (PXD), MassIVE (MSV), UKB-PPP pQTL summary stats, AMP-AD (Synapse), CELLxGENE, SEA-AD, Allen Brain Cell Atlas, HCA, Tahoe-100M, JUMP Cell Painting, scPerturb, DepMap. Use when the user says "download/get/pull/save <dataset or accession> to the NAS", mentions PXD/MSV/PDC/syn accessions, or asks for single-cell, perturbation, Olink/SomaScan, AD/PD proteomics data on the NAS.
 ---
 
 # omics-dataset-fetch
 
-Requires the `nas` MCP server (see `nas_agent/README.md`). The source of truth is
-`nas_agent/datasets/registry.yaml`.
+Needs the `nas` MCP server (tools prefixed `nas_`). Downloads run **on the NAS** and keep
+going after this session ends. Nothing is transferred until `nas_submit_plan`.
 
-## 1. Resolve the request
-- Map the request to a registry `id` (or to an accession: `PXD…` → pride, `MSV…` → massive,
-  `PDC0…` → cptac-pdc, `syn…` → synapse-backed entry).
-- If the user named something that isn't in the registry, look up its official access route
-  (provider docs, not third-party mirrors) and propose a new registry entry before downloading.
-- If the entry has no `verified` date, or it is older than 6 months, re-check the provider's
-  access page first.
+## Workflow
 
-## 2. Enforce `local_download` (never skip)
-| value | action |
+1. **Find the dataset.** Run `nas_catalog_search` with keywords, such as `"alzheimer single cell"`,
+   `"olink"` or `"cptac"`. Map accessions to registry ids:
+   - `PXD…` → `pride`; single-cell MS proteomics → `sc-proteomics`
+   - `MSV…` → `massive`
+   - `PDC0…` → `cptac-pdc`
+   - `syn…` → `amp-ad`, or `ukb-ppp-pqtl` for syn51365301
+   - a CELLxGENE collection or a disease/tissue query → `cellxgene-discover`
+   - any other open S3 bucket, Hugging Face repo, Zenodo record or URL list → `open-s3`, `open-hf`,
+     `open-zenodo` or `open-urls`
+
+   If the source isn't covered, say so. Propose a registry entry (with the provider's official access
+   docs) instead of improvising.
+
+2. **Respect the access policy** shown in the search result:
+   - `forbidden` (UK Biobank participant-level Olink, GNPC): don't try. Explain that analysis happens
+     inside UKB-RAP or the AD Workbench, and that only summary results may be exported.
+   - `check_dua` (AMP-AD, AMP-PD/PPMI, ADNI): before submitting, ask the user whether:
+     - they hold an active approval,
+     - the DUA/DUC allows copies on a personal NAS,
+     - the approval is theirs personally, not their employer's.
+
+     Pass their answer verbatim as `policy_ack`. **Never invent or paraphrase an acknowledgement.**
+     If any answer is no or unsure, stop.
+   - `summary_only` (UKB-PPP pQTL): the `policy_ack` must state that only summary statistics are
+     downloaded.
+   - `allowed`: proceed, and mention the licence from the plan.
+
+3. **Scope before you plan.** For big sources:
+   - S3 sources: use `nas_browse_source` to walk sub-folders, e.g. SEA-AD `MTG/`, then pass
+     `params.prefix`.
+   - `cptac-pdc`: use `nas_browse_source` to see the data categories and their sizes.
+
+   Prefer the smallest useful subset:
+   - processed tables (`Protein Assembly`) before `Raw Mass Spectra`
+   - JUMP profiles, not images (images run to hundreds of TB)
+   - a tissue or disease slice of CELLxGENE, not the whole census
+   - `include` globs such as `["*.h5ad"]` or `["*DLPFC*"]`
+
+4. **Plan.** Call `nas_plan_dataset(dataset_id, params, dest?, include?, exclude?, max_files?)` and show
+   the user:
+   - file count and total size
+   - the largest files
+   - the destination folder (default: the registry `nas_path` under the omics root)
+   - licence and policy
+   - whether sizes are only estimates (PRIDE)
+
+   Ask them to confirm. Use `nas_storage_overview` if free space looks tight.
+
+5. **Submit.** Call `nas_submit_plan(plan_id, confirm_large?, policy_ack?)`.
+   - Set `confirm_large=true` only after the user explicitly agreed to a download above the threshold
+     (default 100 GB).
+   - Report the job id and the destination.
+   - Jobs over ~20 GB: offer a check-in in about an hour (e.g. `send_later`) rather than polling.
+
+6. **Track.** Use `nas_job_status(job_id)` and relay its `hint` on errors:
+   - code 32 (checksum): cancel with `purge_partial`, then re-plan.
+   - HTTP 4xx on PDC (expired signed URLs): re-plan and submit again; finished files are skipped.
+   - code 8 (server can't resume): cancel with purge, then resubmit.
+
+   Retry once. Report persistent failures instead of looping.
+
+7. **Verify and document.** When the job is complete:
+   - Run `nas_verify_job(job_id)`: presence, no partial files, exact sizes. This writes
+     `PROVENANCE.md` and `files.tsv`, and adds a row to `CATALOG.tsv`.
+   - For a final integrity check, run `nas_verify_job(job_id, deep=true)` (background re-hash), then
+     call it again later to read the result.
+   - Tell the user where the data is, its size, the verification result and how to cite it.
+
+## Parameters per connector (`params`)
+| dataset_id | params |
 |---|---|
-| `forbidden` | Do **not** queue anything. Explain that analysis must happen in the provider's enclave (UKB-RAP, AD Workbench), and offer to set up in-platform analysis or download only exported summary results. |
-| `summary_only` | Queue only summary-statistic/metadata files. Refuse participant-level files. |
-| `check_dua` | Ask the user to confirm that (a) they hold an active approval, (b) the DUA/DUC allows copies on this personal device, and (c) the approval is personal, not institutional/employer-held. Record the DUA name/ID in PROVENANCE.md. If any answer is no or unsure, stop. |
-| `allowed` | Proceed; still honour the dataset licence (note it in PROVENANCE.md). |
+| `pride`, `sc-proteomics` | `accession` (PXD), optional `categories` e.g. `["RAW","RESULT","SEARCH","PEAK","FASTA"]` |
+| `cptac-pdc` | `pdc_study_id`, `data_categories` (browse first) |
+| `massive` | `accession` (MSV), optional `subdir` |
+| `sea-ad`, `abc-atlas`, `cellxgene-census`, `jump-cellpainting`, `open-s3` | `prefix` (+ `bucket`, `region` for open-s3) |
+| `tahoe-100m`, `open-hf` | `path` (sub-folder), optional `revision` (+ `repo` for open-hf) |
+| `cellxgene-discover` | `collection_id` or filters `disease` / `tissue` / `assay` / `organism` / `cell_type`; `filetype` H5AD or RDS |
+| `scperturb`, `open-zenodo` | `record_id` (scPerturb default 13350497; ATAC 7058382) |
+| `amp-ad`, `ukb-ppp-pqtl` | `syn_id` (needs the user's Synapse token on the NAS; sizes unknown up front) |
+| `hpa-blood`, `hca`, `depmap`, `open-urls` | `urls`: list of URLs or `{url, name, md5/sha1/sha256, size}` |
 
-Credentials (Synapse PAT, HF token) live only on the NAS in `~agent/.config/` (mode 600). Never
-ask the user to paste tokens into chat.
-
-## 3. Scope and preflight
-1. Build a file manifest with the entry's connector (PDC manifest, PRIDE file list, `aws s3 ls
-   --no-sign-request --recursive`, `synapse` listing, HF file list).
-2. Show the user the file count, total size, and a suggested filter. Large sets default to the
-   smallest useful subset: processed tables before raw; the relevant tissue/disease slice of
-   CELLxGENE; JUMP profiles, not images.
-3. Destination = `<omics root>/<nas_path>`. Confirm the folder with the user or pick it from `list_folders`.
-4. `preflight_download` → refuse if the size exceeds free space minus 5% reserve. Ask for
-   explicit confirmation above 100 GB.
-
-## 4. Submit and track
-- `submit_manifest(rows, dest)` (aria2 for HTTP/FTP; the fetcher container for s3/synapse/hf).
-- Schedule a check-in (`send_later`, ~1 h for >50 GB). On each check: `job_status`; retry failed
-  items once, and report persistent failures rather than looping.
-
-## 5. Verify and document
-- `verify_files` against provider checksums (PRIDE/PDC md5, S3 ETag where single-part,
-  Synapse md5). Report mismatches and re-queue only those files.
-- Write `PROVENANCE.md` in the dataset folder: source URL/accession, version/release,
-  download date, file count/size, checksum result, licence or DUA reference, citation.
-- Append the dataset to `<omics root>/CATALOG.tsv` (id, path, size, date, access tier).
-
-## Suggested NAS layout
-```
-<omics root>/
-  proteomics/{cptac,pride,massive,single-cell}/
-  affinity/{ukb-ppp-pqtl,hpa}/
-  neuro/{amp-ad,amp-pd,adni}/
-  singlecell/{cellxgene,sea-ad,abc-atlas,hca}/
-  phenotypic/{tahoe-100m,cellpainting,scperturb,depmap}/
-  CATALOG.tsv
-```
+Credentials (Synapse token, Hugging Face token) are set up by the user on the NAS. Never ask for a
+token in chat.
