@@ -71,13 +71,28 @@ MCP **resources**: `nas://volumes`, `nas://jobs/active`. MCP **prompt**: `downlo
 |---|---|---|
 | **`nas-download`** | "download X to the NAS", "save this dataset to …" | resolve folder (list → user picks or confirm) → `preflight` → show size/ETA/free space → `submit` → `send_later` check-in → `verify_files` → summary |
 | **`nas-storage`** | "how full is the NAS", "what's using space" | `storage_overview` + `folder_usage` → ranked report, warn at >80% |
-| **`omics-dataset-fetch`** | "get PXD0xxxxx", "pull GSE/SRR…" | resolve accession → file list + checksums from the repository API (PRIDE/ProteomeXchange, MassIVE, GEO, SRA) → filter (e.g. `.raw` only) → `submit_manifest` into `/vol1/.../Datasets/<accession>/` → verify → write `README.md` with provenance |
+| **`omics-dataset-fetch`** | "get PXD0xxxxx", "pull CPTAC / SEA-AD / Tahoe-100M…" | registry lookup → **access-policy gate** → manifest + size preflight → `submit_manifest` → verify checksums → `PROVENANCE.md` + `CATALOG.tsv`. Spec: `skills/omics-dataset-fetch/SKILL.md` |
 | **`nas-health`** | "check the NAS", weekly routine | SMART, RAID/Btrfs state, temps, Docker container health (read-only) |
 | **`nas-upload`** (optional) | "push these results to the NAS" | `rsync -aP --partial` from laptop to a chosen folder over SSH |
 
 `omics-dataset-fetch` is where this becomes a real research tool. MS raw-file datasets are often
 100 GB–1 TB, and resumable, checksum-verified NAS-side downloads with provenance notes are what
 make them reusable later.
+
+## 3b. Dataset coverage and access tiers
+`datasets/registry.yaml` lists 19 sources. Each has a `local_download` policy that the skill enforces:
+
+| Tier | Sources | What reaches the NAS |
+|---|---|---|
+| **allowed** (open) | CPTAC/PDC, PRIDE, MassIVE, HPA, CELLxGENE Census, SEA-AD, Allen Brain Cell Atlas, HCA, single-cell MS proteomics, Tahoe-100M, JUMP Cell Painting, scPerturb, DepMap | Full files (filtered to a sensible subset) |
+| **summary_only** | UKB-PPP pQTL summary stats (Synapse syn51365301) | Summary statistics + metadata |
+| **check_dua** | AMP-AD Knowledge Portal, AMP-PD (incl. PPMI Olink/SomaScan), ADNI | Only after the user confirms the DUA allows copies on a personal device |
+| **forbidden** | UK Biobank participant-level Olink (UKB-RAP), GNPC SomaScan (AD Workbench) | Nothing. Analysis stays in the enclave; only exported summary results |
+
+Additional connectors this needs in `nas-mcp` (run in one "fetcher" Docker image on the NAS):
+`fetch_s3(prefix, include)` (aws CLI, no-sign-request) · `fetch_synapse(syn_id)` (synapseclient)
+· `fetch_hf(repo, allow_patterns)` (huggingface-cli) · `fetch_pdc(study_id, file_types)` (PDC
+GraphQL) · `fetch_pride(accession, patterns)` · `catalog_search(query)` (reads the registry).
 
 ## 4. Build plan (after the probe)
 1. **Foundation:** enable SSH; create `agent` user + SSH key; choose allowlisted roots; start aria2
