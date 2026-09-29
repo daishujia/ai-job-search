@@ -22,5 +22,6 @@ def list_files(params: dict, http, cfg) -> Listing:
     if not (Path("~/.synapseConfig").expanduser().is_file() or __import__("os").environ.get("SYNAPSE_AUTH_TOKEN")):
         raise NasError("No Synapse credentials on the NAS. Create a personal access token at synapse.org "
                        "and run `synapse config` as the agent user (the token stays on the NAS).")
-    return Listing(kind="process", command=[exe, "get", "-r", syn, "--downloadLocation", "{dest}"],
+    return Listing(kind="process", command=[exe, "get", "-r", syn, "--downloadLocation", "{dest}/_incoming"],
+                   record={"syn_id": syn},
                    meta={"source_url": f"https://www.synapse.org/Synapse:{syn}", "accession": syn})

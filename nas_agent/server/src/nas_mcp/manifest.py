@@ -44,6 +44,9 @@ class Plan:
     command: list[str] | None = None   # for kind=process
     meta: dict = field(default_factory=dict)  # title, license, source_url, citation, notes
     created: float = field(default_factory=time.time)
+    source: str = ""
+    project_code: str = ""
+    record: dict = field(default_factory=dict)
 
     # ---- persistence ----
     def save(self, cfg: Config) -> Path:
@@ -60,7 +63,8 @@ class Plan:
             raise NasError(f"Unknown plan_id {plan_id}. Create one with nas_plan_dataset or nas_plan_urls.")
         d = json.loads(path.read_text())
         d["files"] = [FileEntry(**f) for f in d.get("files", [])]
-        return Plan(**d)
+        known = set(Plan.__dataclass_fields__)
+        return Plan(**{k: v for k, v in d.items() if k in known})
 
     # ---- summaries ----
     @property
@@ -69,13 +73,22 @@ class Plan:
 
     def summary(self, top: int = 10) -> dict:
         exts = Counter(Path(f.relpath).suffix.lower() or "(none)" for f in self.files)
+        levels: dict[str, dict] = {}
+        for f in self.files:
+            lv = f.relpath.split("/", 1)[0]
+            e = levels.setdefault(lv, {"files": 0, "bytes": 0})
+            e["files"] += 1
+            e["bytes"] += f.size or 0
         biggest = sorted(self.files, key=lambda f: f.size or 0, reverse=True)[:top]
         return {
             "plan_id": self.plan_id,
             "dataset_id": self.dataset_id,
             "policy": self.policy,
             "kind": self.kind,
+            "source": self.source,
+            "project_code": self.project_code,
             "dest": self.dest,
+            "levels": {k: {"files": v["files"], "size": human(v["bytes"])} for k, v in sorted(levels.items())},
             "file_count": len(self.files),
             "total_bytes_known": self.known_bytes,
             "total_human": human(self.known_bytes),

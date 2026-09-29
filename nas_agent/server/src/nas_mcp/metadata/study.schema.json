@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai4sci.local/schemas/study/1.0",
+  "title": "AI4Sci Dataset Metadata Standard (ADMS) - study record v1.0",
+  "description": "One record per <SOURCE>/<PROJECT_CODE> folder. Ontology vocabulary follows CELLxGENE schema / HUPO-PSI SDRF conventions (NCBITaxon, UBERON, CL, MONDO, EFO, PATO, HsapDv, HANCESTRO, MS, Cellosaurus). Every field that was not taken verbatim from the source API must carry evidence in curation.field_evidence.",
+  "type": "object",
+  "required": ["schema_version", "identity", "assay", "curation"],
+  "additionalProperties": false,
+  "$defs": {
+    "term": {
+      "type": "object",
+      "required": ["label"],
+      "additionalProperties": false,
+      "properties": {
+        "label": {"type": "string", "minLength": 1},
+        "id": {"type": ["string", "null"], "pattern": "^([A-Za-z][A-Za-z0-9_]*:[A-Za-z0-9_.\\-]+|CVCL_[A-Z0-9]{4})( \\|\\| .+)?$"},
+        "ontology": {"type": ["string", "null"]},
+        "verbatim": {"type": ["string", "null"], "description": "Original text from the source when the label was normalised."}
+      }
+    },
+    "terms": {"type": "array", "items": {"$ref": "#/$defs/term"}},
+    "level": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "files": {"type": "integer", "minimum": 0},
+        "bytes": {"type": "integer", "minimum": 0},
+        "formats": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["source", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {"enum": ["api", "file", "publication", "repository_page", "inferred", "user"]},
+        "detail": {"type": "string"},
+        "confidence": {"enum": ["high", "medium", "low"]}
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "identity": {
+      "type": "object",
+      "required": ["source", "project_code", "title"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {"type": "string"},
+        "project_code": {"type": "string"},
+        "registry_id": {"type": ["string", "null"]},
+        "accessions": {"type": "array", "items": {"type": "string"}},
+        "title": {"type": "string", "minLength": 3},
+        "description": {"type": ["string", "null"]},
+        "version": {"type": ["string", "null"]},
+        "doi": {"type": ["string", "null"]},
+        "license": {"type": ["string", "null"]},
+        "access_policy": {"enum": ["allowed", "summary_only", "check_dua", "forbidden", "user_declared", null]},
+        "dua_reference": {"type": ["string", "null"]},
+        "urls": {"type": "array", "items": {"type": "string"}},
+        "keywords": {"type": "array", "items": {"type": "string"}},
+        "publications": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "properties": {"pmid": {"type": ["string", "null"]}, "doi": {"type": ["string", "null"]},
+                           "title": {"type": ["string", "null"]}, "citation": {"type": ["string", "null"]}}
+          }
+        },
+        "contacts": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "properties": {"name": {"type": "string"}, "affiliation": {"type": ["string", "null"]},
+                           "role": {"type": ["string", "null"]}}
+          }
+        },
+        "consortium": {"type": ["string", "null"]}
+      }
+    },
+    "biology": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "organism": {"$ref": "#/$defs/terms"},
+        "tissue": {"$ref": "#/$defs/terms"},
+        "sample_type": {"$ref": "#/$defs/terms", "description": "Specimen/biofluid/material: plasma, serum, CSF, tumor tissue, cell line, organoid..."},
+        "cell_type": {"$ref": "#/$defs/terms"},
+        "cell_line": {"$ref": "#/$defs/terms"},
+        "disease": {"$ref": "#/$defs/terms", "description": "Include PATO:0000461 'normal' when healthy controls are present."},
+        "sex": {"$ref": "#/$defs/terms"},
+        "development_stage": {"$ref": "#/$defs/terms"},
+        "ancestry": {"$ref": "#/$defs/terms"},
+        "perturbations": {
+          "type": "array",
+          "items": {
+            "type": "object", "required": ["type", "agent"], "additionalProperties": false,
+            "properties": {
+              "type": {"enum": ["compound", "genetic", "biologic", "environmental", "other"]},
+              "agent": {"$ref": "#/$defs/term"},
+              "dose": {"type": ["string", "null"]}, "duration": {"type": ["string", "null"]}
+            }
+          }
+        }
+      }
+    },
+    "assay": {
+      "type": "object",
+      "required": ["modality"],
+      "additionalProperties": false,
+      "properties": {
+        "modality": {
+          "type": "array", "minItems": 1,
+          "items": {"enum": ["ms_proteomics", "affinity_proteomics", "single_cell_proteomics", "phosphoproteomics",
+                             "metabolomics", "lipidomics", "scRNA-seq", "snRNA-seq", "multiome", "snATAC-seq",
+                             "spatial_transcriptomics", "spatial_proteomics", "bulk_RNA-seq", "genomics",
+                             "gwas_summary_statistics", "imaging_phenotypic", "clinical", "other"]}
+        },
+        "technology": {"$ref": "#/$defs/terms", "description": "Platform/instrument/kit: Orbitrap Astral (MS:1003378), Olink Explore 3072, SomaScan 7k, 10x 3' v3 (EFO:0009922)."},
+        "acquisition": {"type": "array", "items": {"type": "string"}, "description": "DIA, DDA, PRM, SRM, TMT-MS3, ..."},
+        "quantification": {"type": "array", "items": {"type": "string"}, "description": "label-free, TMT10, TMTpro 16, SILAC, NPX, RFU, UMI counts, ..."},
+        "fractions": {"type": "array", "items": {"type": "string"}, "description": "Proteome, Phosphoproteome, Glycoproteome, ..."},
+        "feature_type": {"type": ["string", "null"], "description": "protein, peptide, precursor, gene, aptamer, image feature, variant"},
+        "software": {"$ref": "#/$defs/terms"},
+        "protocol_summary": {"type": ["string", "null"]}
+      }
+    },
+    "design": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "study_type": {"type": ["string", "null"], "description": "case-control, cohort, cross-sectional, longitudinal, perturbation screen, atlas, benchmark, ..."},
+        "n_subjects": {"type": ["integer", "null"], "minimum": 0},
+        "n_samples": {"type": ["integer", "null"], "minimum": 0},
+        "n_cells": {"type": ["integer", "null"], "minimum": 0},
+        "n_features": {"type": ["integer", "null"], "minimum": 0},
+        "groups": {
+          "type": "array",
+          "items": {"type": "object", "required": ["name"], "additionalProperties": false,
+                    "properties": {"name": {"type": "string"}, "n": {"type": ["integer", "null"]},
+                                   "description": {"type": ["string", "null"]}}}
+        },
+        "factors": {"type": "array", "items": {"type": "string"}},
+        "timepoints": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "levels": {"type": "object", "additionalProperties": false,
+                   "properties": {"raw": {"$ref": "#/$defs/level"}, "processed": {"$ref": "#/$defs/level"},
+                                  "metadata": {"$ref": "#/$defs/level"}}},
+        "nas_path": {"type": "string"},
+        "client_path": {"type": ["string", "null"]},
+        "downloaded": {"type": ["string", "null"]},
+        "verified": {"type": ["boolean", "null"]},
+        "has_samples_table": {"type": "boolean"}
+      }
+    },
+    "curation": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {"enum": ["draft", "curated", "reviewed"]},
+        "curated_by": {"type": ["string", "null"]},
+        "curated_at": {"type": ["string", "null"]},
+        "field_evidence": {"type": "object", "additionalProperties": {"$ref": "#/$defs/evidence"}},
+        "needs_review": {"type": "array", "items": {"type": "string"}},
+        "notes": {"type": ["string", "null"]}
+      }
+    },
+    "extensions": {"type": "object", "description": "Source-specific extras, e.g. {'pride': {...}}. Not indexed."}
+  }
+}

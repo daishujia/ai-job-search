@@ -37,6 +37,16 @@ class Config:
     max_plan_files: int = 200_000
     extra: dict = field(default_factory=dict)
     source_path: Path | None = None
+    client_root: str | None = None          # how the user's computer sees omics_root, e.g. /Volumes/AI4Sci/database
+    path_aliases: dict = field(default_factory=dict)  # client prefix -> NAS prefix
+
+    @property
+    def catalog_dir(self) -> Path:
+        return self.omics_root / "_catalog"
+
+    @property
+    def ingests_dir(self) -> Path:
+        return self.state_dir / "ingests"
 
     @property
     def aria2_secret(self) -> str | None:
@@ -59,7 +69,7 @@ class Config:
         return self.state_dir / "logs"
 
     def ensure_dirs(self) -> None:
-        for d in (self.plans_dir, self.jobs_dir, self.logs_dir):
+        for d in (self.plans_dir, self.jobs_dir, self.logs_dir, self.ingests_dir):
             d.mkdir(parents=True, exist_ok=True)
 
 
@@ -93,9 +103,13 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
         connections_per_file=int(raw.get("connections_per_file", 8)),
         max_plan_files=int(raw.get("max_plan_files", 200_000)),
         extra={k: v for k, v in raw.items() if k not in {
-            "omics_root", "allowed_roots", "registry", "state_dir", "aria2", "tokens",
-            "free_space_reserve_pct", "confirm_above_gb", "connections_per_file", "max_plan_files"}},
+            "omics_root", "allowed_roots", "registry", "state_dir", "aria2", "tokens", "client_root",
+            "path_aliases", "free_space_reserve_pct", "confirm_above_gb", "connections_per_file", "max_plan_files"}},
+        client_root=str(raw["client_root"]).rstrip("/") if raw.get("client_root") else None,
+        path_aliases={str(k).rstrip("/"): str(_p(v)).rstrip("/") for k, v in (raw.get("path_aliases") or {}).items()},
     )
+    if cfg.client_root:
+        cfg.path_aliases.setdefault(cfg.client_root, str(omics_root).rstrip("/"))
     cfg.source_path = cfg_path
     cfg.ensure_dirs()
     return cfg

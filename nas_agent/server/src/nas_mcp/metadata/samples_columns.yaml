@@ -1,0 +1,27 @@
+# Standard columns for metadata/samples.tsv (one row per sample / aliquot / h5ad donor-sample).
+# Order is fixed; unknown values are left empty (never "NA"/"unknown" unless the source says so).
+# Source-specific columns are kept after these, prefixed "char:" (characteristics) or "comment:".
+# Ontology id columns hold CURIEs (MONDO:0004975, UBERON:0001969, NCBITaxon:9606, CL:..., PATO:...).
+columns:
+  - {name: sample_id,        required: true,  desc: "Unique sample/aliquot/run identifier used by the source"}
+  - {name: subject_id,       required: false, desc: "Donor / patient / case id (pseudonymous as published)"}
+  - {name: organism,         required: false}
+  - {name: organism_id,      required: false, ontology: NCBITaxon}
+  - {name: tissue,           required: false}
+  - {name: tissue_id,        required: false, ontology: UBERON}
+  - {name: sample_type,      required: false, desc: "plasma, serum, CSF, tumor tissue, normal adjacent tissue, cell line, ..."}
+  - {name: disease,          required: false}
+  - {name: disease_id,       required: false, ontology: MONDO}
+  - {name: sex,              required: false}
+  - {name: age,              required: false}
+  - {name: age_unit,         required: false}
+  - {name: development_stage, required: false}
+  - {name: cell_type,        required: false}
+  - {name: cell_line,        required: false}
+  - {name: condition,        required: false, desc: "Study group / arm / phenotype label"}
+  - {name: treatment,        required: false}
+  - {name: timepoint,        required: false}
+  - {name: batch,            required: false}
+  - {name: replicate,        required: false}
+  - {name: label,            required: false, desc: "Multiplex label/channel, e.g. TMT 126, Olink plate/well"}
+  - {name: data_file,        required: false, desc: "Relative path(s) of the data file(s) for this sample"}

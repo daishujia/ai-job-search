@@ -20,6 +20,7 @@ def cfg(tmp_path):
     c.write_text(yaml.safe_dump({
         "omics_root": str(root), "allowed_roots": [str(root)], "registry": str(reg),
         "state_dir": str(tmp_path / "state"), "confirm_above_gb": 1,
+        "client_root": "/Volumes/AI4Sci/database",
     }))
     return load_config(c)
 

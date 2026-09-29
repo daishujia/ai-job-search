@@ -13,6 +13,7 @@ class Listing:
     meta: dict = field(default_factory=dict)
     kind: str = "aria2"
     command: list[str] | None = None
+    record: dict = field(default_factory=dict)  # raw source metadata, saved to metadata/source/
 
 
 def require(params: dict, key: str, pattern: str | None = None, example: str = "") -> str:

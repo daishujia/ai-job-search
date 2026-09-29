@@ -1,136 +1,148 @@
-# NAS Agent Toolkit: omics dataset downloads to the fnOS NAS
+# NAS Agent Toolkit: AI4Sci omics database on the fnOS NAS
 
-Claude Code skills and an MCP server (`nas-mcp`) that plan, queue, track and verify large
-public-omics downloads **on the NAS** (fnOS, Debian 12, `192.168.86.28`) into folders you choose.
-Transfers run in an aria2 daemon, so they resume after interruptions and keep going after Claude
-or the laptop goes to sleep.
+Claude Code skills and an MCP server (`nas-mcp`) that build and maintain a local omics database on
+the NAS (fnOS, Debian 12, `192.168.86.28`):
+- **Download** public datasets (raw and/or processed) resumably on the NAS via aria2.
+- **Organize** everything as `/Volumes/AI4Sci/database/<SOURCE>/<PROJECT_CODE>/{raw,processed,metadata}`.
+- **Ingest** data already on the NAS, such as manual ADNI/GEO downloads.
+- **Extract and standardize** study- and sample-level metadata (ADMS v1.0), indexed and searchable.
 
 ```
-Claude Code (laptop) ──stdio over SSH (key auth)──► nas-mcp (Python, NAS user `agent`)
-                                                        ├─ connectors: PRIDE · PDC/CPTAC · S3 · Hugging Face · Zenodo
-                                                        │              CELLxGENE · MassIVE · Synapse · URL lists
-                                                        ├─ registry.yaml → access-policy gate
-                                                        └─ aria2 JSON-RPC (127.0.0.1, secret) ─► /vol1/…/omics/<dataset>/
+Claude Code (Mac) ──stdio over SSH──► nas-mcp (Python, on the NAS)
+                                        ├─ connectors: PRIDE · PDC/CPTAC · S3 open data · Hugging Face · Zenodo
+                                        │              CELLxGENE · MassIVE · Synapse · URL lists · local folders
+                                        ├─ registry.yaml → access policy + SOURCE/PROJECT_CODE naming
+                                        ├─ aria2 (127.0.0.1, secret) ─► <share>/database/<SOURCE>/<PROJECT>/…
+                                        └─ metadata: extract → inspect → ontology (OLS4) → validate → SQLite index
+Mac Finder: /Volumes/AI4Sci/database/…   (same folder over SMB; every tool accepts Mac paths)
 ```
 
-## Layout
-| Path | What |
-|---|---|
-| `server/` | `nas-mcp` Python package (MCP SDK v1 and v2 compatible), tests |
-| `datasets/registry.yaml` | 24 sources, each with an access policy, connector, defaults and target folder |
-| `skills/` | Claude Code skills: `omics-dataset-fetch`, `nas-download`, `nas-storage` |
-| `deploy/` | `deploy_from_laptop.sh`, `install_nas.sh`, aria2 container, `install_skills.sh`, example config |
-| `probe_nas.sh` | Read-only NAS inventory (optional, for troubleshooting) |
+## Database layout
+```
+/Volumes/AI4Sci/database/                    NAS: /vol1/<uid>/AI4Sci/database (found by the installer)
+├── CATALOG.tsv                              one row per project: organism, disease, tissue, n, sizes, status, path
+├── _catalog/catalog.sqlite, downloads.tsv   search index (nas_query_catalog) + download log
+├── PRIDE/PXD046444/
+│   ├── raw/         .raw .d .wiff .mzML .mgf .fastq .bam images           (instrument/sequencer output)
+│   ├── processed/   search results, quant tables, matrices, .h5ad .parquet .mzTab
+│   ├── metadata/    study.json · samples.tsv · SDRF · README · source/<api records>.json
+│   ├── PROVENANCE.md   source, version, licence/DUA, verification, citation
+│   └── files.tsv       per-file size, checksum, source URL
+├── CPTAC-PDC/PDC000127/   CELLxGENE/<collection_id>/   SEA-AD/MTG/   Tahoe/Tahoe-100M/
+├── UKB-PPP/syn51365301/   AMP-AD/syn…/   ADNI/<your code>/   GEO/GSE…/   DepMap/24Q4/ …
+```
+`SOURCE` and the default `PROJECT_CODE` come from `datasets/registry.yaml` (accession, study ID, S3
+prefix, release). Files are sorted into levels by per-source rules (PRIDE file categories, PDC data
+categories), with file extensions and names as the fallback.
+
+## Metadata standard (ADMS v1.0)
+- **Schema:** `server/src/nas_mcp/metadata/study.schema.json` (JSON Schema 2020-12). Sections:
+  `identity`, `biology`, `assay`, `design`, `data`, `curation` (evidence per field), `extensions`.
+- **Ontologies:** the CELLxGENE-schema / SDRF-Proteomics choices: NCBITaxon, UBERON, CL, MONDO, EFO,
+  PATO, HsapDv, HANCESTRO, MS, ChEBI, Cellosaurus. Lookups go through EBI OLS4.
+- **Samples:** `metadata/samples.tsv` uses standard columns (`sample_id`, `subject_id`, organism,
+  tissue, sample_type, disease, sex, age, condition, label, data_file, …). Source extras are kept as
+  `char:` / `comment:` columns.
+- **Field guide:** `skills/study-metadata-curation/reference/framework.md`.
+- **Automatic first pass:** every verified download or ingest produces a draft from the saved API
+  records and files on disk:
+  - PRIDE project CV terms and SDRF samples
+  - PDC study details and biospecimens
+  - CELLxGENE ontology terms
+  - Zenodo, Hugging Face and MassIVE records
+
+  Claude then fills the gaps (from file content and publications), normalizes terms and saves a
+  validated `study.json`.
 
 ## Setup (about 15 minutes, once)
-Run from a laptop on the home Wi-Fi (macOS, Linux, or Windows via WSL/Git Bash).
-
-1. **fnOS web UI** (`http://192.168.86.28:5666`):
-   - Create a user such as `agent`. It doesn't need to be an admin.
-   - Create or choose a shared folder for datasets (e.g. `omics` → `/vol1/1000/omics`) and give
-     `agent` read/write.
-   - SSH is already enabled.
-2. **SSH key login.** The MCP connection can't type passwords.
-   `ssh-keygen -t ed25519` (if you have no key), then `ssh-copy-id agent@192.168.86.28`.
-3. **Deploy and install:**
+1. **fnOS:** SSH is already on. Decide which account runs the service. Using the account that owns
+   the `AI4Sci` folder means files show up as yours on the Mac. Set up key login from the Mac:
+   `ssh-copy-id <you>@192.168.86.28`.
+2. **Deploy** from the Mac (the NAS path of `AI4Sci` is auto-detected):
    ```bash
-   nas_agent/deploy/deploy_from_laptop.sh agent@192.168.86.28 --omics-root /vol1/1000/omics \
-       [--allow /vol1/1000/Downloads] [--with-synapse] [--install-uv]
+   nas_agent/deploy/deploy_from_laptop.sh <you>@192.168.86.28 --share AI4Sci --with-synapse \
+       [--allow /vol1/1000/Downloads] [--install-uv] [--no-docker]
    ```
-   - This uploads the code to `~/nas-mcp/src` and creates a venv.
-   - It writes `~/.config/nas-mcp/config.yaml` and a random aria2 secret (mode 600).
-   - It also generates the aria2 container files.
+   - It writes `~/.config/nas-mcp/config.yaml` with `omics_root: <share>/database` and
+     `client_root: /Volumes/AI4Sci/database`.
+   - It installs the Python venv, including h5py and pyarrow for file inspection.
+   - It generates the aria2 engine config.
    - Re-running upgrades the code and keeps your config.
-   - Add `--install-uv` if fnOS lacks `python3-venv`.
-   - Add `--no-docker` to use a host `aria2c` via a systemd user service instead of the container.
-4. **Start aria2 once** (the command is printed by the installer; `sudo` is needed unless `agent` is in
-   the docker group):
+3. **Start aria2**, then run the self-check (the installer prints the exact commands):
    ```bash
-   ssh -t agent@192.168.86.28 'sudo docker compose -f ~/nas-mcp/aria2/docker-compose.yml up -d --build'
-   ssh agent@192.168.86.28 '~/nas-mcp/.venv/bin/nas-mcp --check'   # config / registry / folders / aria2
+   ssh -t <you>@192.168.86.28 'sudo docker compose -f ~/nas-mcp/aria2/docker-compose.yml up -d --build'
+   ssh <you>@192.168.86.28 '~/nas-mcp/.venv/bin/nas-mcp --check'
    ```
-5. **Connect Claude Code and install the skills** on the laptop:
+4. **Connect Claude Code and install the skills** on the Mac:
    ```bash
-   claude mcp add nas --scope user -- ssh -o BatchMode=yes agent@192.168.86.28 /home/agent/nas-mcp/.venv/bin/nas-mcp
+   claude mcp add nas --scope user -- ssh -o BatchMode=yes <you>@192.168.86.28 <printed path>/nas-mcp
    nas_agent/deploy/install_skills.sh
    ```
-   (Use the exact path printed by the installer.)
-6. **Credentials** (only for sources that need them; they stay on the NAS):
-   - Synapse (AMP-AD, UKB-PPP pQTL): as `agent`, run `~/nas-mcp/.venv/bin/synapse config` with a
-     personal access token.
-   - Gated Hugging Face repos: put a read token in `~/.config/nas-mcp/hf.token` (chmod 600).
-   - PDC, PRIDE, S3 open data, Zenodo and CELLxGENE need no login.
+5. **Credentials** (stay on the NAS):
+   - `synapse config` for AMP-AD and UKB-PPP.
+   - `~/.config/nas-mcp/hf.token` for gated Hugging Face repos.
 
-## Using it
-Ask Claude in plain language. The skills drive the tools:
-- "Get the SEA-AD MTG snRNA-seq h5ad files onto the NAS"
-- "Download CPTAC CCRCC PDC000127 protein tables"
-- "Pull PXD046444 raw files into proteomics/benchmarks"
-- "What Parkinson's single-cell datasets are on CELLxGENE, and how big?"
-- "How full is the NAS?"
-- "Is the Tahoe download done?"
-
-Every download follows the same sequence:
-1. Plan: list the files, total size, licence and policy. Nothing is downloaded yet.
-2. You confirm.
-3. Submit: free-space check, skip files already present, queue each file with its checksum.
-4. Check status.
-5. Verify: writes `PROVENANCE.md` and `files.tsv` in the dataset folder, and a row in
-   `<omics root>/CATALOG.tsv`.
-
-### MCP tools
-| Tool | Purpose |
+## Skills
+| Skill | For |
 |---|---|
-| `nas_storage_overview`, `nas_list_folders`, `nas_folder_usage`, `nas_create_folder` | Storage (allowlisted roots only; no delete tool exists) |
-| `nas_catalog_search`, `nas_browse_source` | Find datasets; peek at S3 sub-folders / PDC data categories |
-| `nas_plan_dataset`, `nas_plan_urls` | Build a plan (listing only) → `plan_id` |
-| `nas_submit_plan` | Queue it. Enforces the free-space reserve, `confirm_large` (>100 GB) and `policy_ack` for DUA/summary-only sources |
-| `nas_list_jobs`, `nas_job_status`, `nas_control_job` | Track, pause, resume, cancel (optionally purge partial files only) |
-| `nas_verify_job` | Sizes and presence; `deep=true` re-hashes in the background; writes provenance |
-| `nas_downloader_health` | aria2 reachability, version, queue stats |
+| `omics-dataset-fetch` | "Download PXD046444 processed files", "get CPTAC PDC000127 protein tables", "pull SEA-AD MTG h5ad" |
+| `dataset-ingest` | The end-to-end pipeline: remote or local data into the layout, then metadata. "File ~/Downloads/ADNI_export under ADNI" |
+| `study-metadata-curation` | Extract, standardize and save metadata with evidence; batch-curate every draft |
+| `nas-download` | Any URL list, bucket or record into `<SOURCE>/<PROJECT_CODE>` |
+| `nas-storage` | Capacity, what's using space, search the database (`nas_query_catalog`) |
 
-### Access policies (from `registry.yaml`, enforced in code)
+## MCP tools (22)
+| Group | Tools |
+|---|---|
+| Storage | `nas_storage_overview`, `nas_list_folders`, `nas_folder_usage`, `nas_create_folder` |
+| Find and plan | `nas_catalog_search` (registry), `nas_browse_source`, `nas_plan_dataset` (`project_code`, `levels`), `nas_plan_urls` |
+| Download | `nas_submit_plan`, `nas_list_jobs`, `nas_job_status`, `nas_control_job`, `nas_verify_job`, `nas_downloader_health` |
+| Local ingest | `nas_plan_ingest_local` (dry run), `nas_apply_ingest` (move/copy, never overwrites) |
+| Metadata | `nas_extract_metadata`, `nas_inspect_files`, `nas_lookup_ontology`, `nas_save_metadata` (schema-validated) |
+| Database | `nas_query_catalog` (label or ontology-ID search), `nas_rebuild_catalog` |
+
+### Access policies (enforced in code)
 | Policy | Sources | Behaviour |
 |---|---|---|
-| `allowed` | CPTAC/PDC, PRIDE, MassIVE, HPA, CELLxGENE (census and per-dataset), SEA-AD, Allen Brain Cell Atlas, HCA, single-cell MS, Tahoe-100M, JUMP Cell Painting, scPerturb, DepMap, generic open S3/HF/Zenodo/URLs | Plan → confirm → download |
-| `summary_only` | UKB-PPP pQTL summary stats (Synapse syn51365301) | Submit requires `policy_ack` |
-| `check_dua` | AMP-AD (Synapse), AMP-PD/PPMI, ADNI | Submit requires your own DUA statement. AMP-PD and ADNI have no automated connector (Terra/BigQuery, LONI) |
-| `forbidden` | UK Biobank participant-level Olink (UKB-RAP), GNPC SomaScan (AD Workbench) | Refused; analyse in the enclave |
+| `allowed` | CPTAC/PDC, PRIDE, MassIVE, HPA, CELLxGENE, SEA-AD, Allen ABC Atlas, HCA, Tahoe-100M, JUMP, scPerturb, DepMap, generic open data | Plan → confirm → download |
+| `summary_only` | UKB-PPP pQTL summary statistics | Requires `policy_ack` |
+| `check_dua` | AMP-AD, AMP-PD/PPMI, ADNI (local ingest) | Requires your own DUA statement, recorded in PROVENANCE and `study.json` |
+| `forbidden` | UK Biobank participant-level Olink, GNPC | Refused for download *and* local ingest |
 
-Guards:
-- Every path is resolved (symlinks included) and must sit inside `allowed_roots`.
-- Remote file names are sanitised.
-- aria2 RPC is bound to localhost and uses a secret.
-- Tokens are never written to plan files.
-- aria2's session folder is mode 700.
+**Guards:**
+- Path allowlist, with symlinks resolved; Mac paths are mapped to NAS paths.
+- Remote names are sanitized, and the free-space reserve and large-download confirmation always apply.
+- No delete tool. Ingest never overwrites; moves only within one filesystem.
+- aria2 RPC on localhost with a secret; tokens never written to plans.
 
 ## Development and tests
 ```bash
-cd nas_agent/server && uv venv && uv pip install -e '.[test]'
-pytest                                       # unit + real-aria2 end-to-end (needs aria2c) + MCP stdio protocol
-NAS_MCP_LIVE=1 pytest -m live                # real APIs + three small real downloads, checksum-verified
+cd nas_agent/server && uv venv && uv pip install -e '.[test,inspect]'
+pytest                               # 67 tests: unit, metadata, ingest, real-aria2 e2e, MCP stdio protocol
+NAS_MCP_LIVE=1 pytest -m live        # 10 live tests against PRIDE, PDC, S3, HF, CELLxGENE, Zenodo, OLS4
 ```
 
-Tested in the build environment:
-- 38 offline and end-to-end tests pass on MCP SDK 2.2.0 and 1.30.0, plus 7 live tests.
-- Live listings: PRIDE, PDC, SEA-AD S3, Tahoe-100M, CELLxGENE, scPerturb/Zenodo.
-- Real verified downloads: SEA-AD S3 (MD5), Hugging Face (SHA-256) and PRIDE over HTTPS.
-- The installer runs in both Docker and no-Docker modes, and `nas-mcp --check` passes.
+**Verified in the build environment:**
+- The test suite passes on MCP SDK 2.2.0 and 1.30.0.
+- Live: real verified downloads from S3, Hugging Face and PRIDE. The real PXD046444 SDRF was
+  downloaded and auto-extracted into 18 sample rows (6 samples).
+- Live: PDC000127 extraction with 208 biospecimens; the SEA-AD CELLxGENE draft (>1M nuclei, MONDO
+  and CL IDs); OLS4 term lookups.
+- The installer found the `AI4Sci` share in a simulated `/vol*` tree, and `nas-mcp --check` passed.
 
 **Not yet exercised:**
-- Running on the actual fnOS box.
-- Building the aria2 container (no Docker daemon was available; the Compose file validates).
-- MassIVE's FTP walk (no FTP access; unit-tested with a fake server).
-- The Synapse CLI path (needs your token).
+- The real fnOS box.
+- Building the aria2 container (no Docker daemon here; the Compose file validates).
+- MassIVE's FTP walk (fake-server tested).
+- The Synapse CLI (needs your token).
 
 ## Known limits
-- PDC signed URLs last about a week. If a PDC job stalls with HTTP 4xx, re-plan and submit again;
-  finished files are skipped.
-- PRIDE sizes are estimates. Integrity comes from PRIDE's SHA-1 checksums, which aria2 checks
-  (confirmed against a real 23 MB PXD046444 file).
-- S3 ETags equal the file's MD5 only for some objects (never for multipart or KMS-encrypted ones), so
-  they are advisory: they never fail a download, and deep verify reports `etag_differs` as a note.
-- Synapse jobs run the `synapse` CLI in the background. Total size isn't known up front, so only the
-  free-space reserve applies.
-- Browsing is limited to what each source's API exposes; CELLxGENE filtering matches labels
-  (disease / tissue / assay / organism / cell_type).
+- PDC signed URLs last about a week: re-plan and resubmit (finished files are skipped).
+- PRIDE sizes are estimates. Integrity comes from PRIDE SHA-1 checksums (confirmed on a real file),
+  enforced by aria2.
+- S3 ETags are advisory (not MD5 for multipart or KMS-encrypted objects); deep verify reports
+  `etag_differs`.
+- Auto-classification into raw/processed/metadata is rule-based. Re-plan an ingest with
+  `level=...` to correct a folder.
+- Ontology IDs are only as good as the evidence. Low-confidence fields are listed in
+  `curation.needs_review` for you to check.

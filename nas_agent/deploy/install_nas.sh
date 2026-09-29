@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Install nas-mcp on the NAS. Run AS THE NAS USER that will own the downloads (e.g. 'agent'):
-#   bash ~/nas-mcp/src/deploy/install_nas.sh --omics-root /vol1/1000/omics [--allow /vol1/1000/Downloads]...
-#        [--with-synapse] [--install-uv] [--no-docker] [--port 6800]
+# Install nas-mcp on the NAS. Run AS THE NAS USER that owns the target share (so files appear as yours on the Mac):
+#   bash ~/nas-mcp/src/deploy/install_nas.sh --share AI4Sci [--client-root /Volumes/AI4Sci/database]
+#        [--allow /vol1/1000/Downloads]... [--with-synapse] [--install-uv] [--no-docker] [--port 6800]
+#   --share NAME       find the fnOS folder NAME under /vol*/ and use NAME/database as the database root;
+#                      the Mac view defaults to /Volumes/NAME/database
+#   --omics-root PATH  alternatively give the NAS path of the database root explicitly
 # Idempotent: re-running upgrades the code and keeps your config, secret and aria2 session.
 set -euo pipefail
 
-OMICS=""; ALLOW=(); SYN=0; GET_UV=0; DOCKER=1; PORT=6800
+OMICS=""; ALLOW=(); SYN=0; GET_UV=0; DOCKER=1; PORT=6800; SHARE=""; CLIENT=""
 while [ $# -gt 0 ]; do case "$1" in
-  --omics-root) OMICS="$2"; shift 2;;
+  --omics-root|--database-root) OMICS="$2"; shift 2;;
+  --share) SHARE="$2"; shift 2;;
+  --client-root) CLIENT="$2"; shift 2;;
   --allow) ALLOW+=("$2"); shift 2;;
   --with-synapse) SYN=1; shift;;
   --install-uv) GET_UV=1; shift;;
@@ -15,7 +20,18 @@ while [ $# -gt 0 ]; do case "$1" in
   --port) PORT="$2"; shift 2;;
   *) echo "unknown option $1" >&2; exit 2;;
 esac; done
-[ -n "$OMICS" ] || { echo "--omics-root is required (e.g. /vol1/1000/omics)" >&2; exit 2; }
+if [ -z "$OMICS" ] && [ -n "$SHARE" ]; then
+  # fnOS keeps folders at /vol<N>/<uid>/<name>; NAS_VOL_GLOB exists only for testing the search.
+  mapfile -t HITS < <(find ${NAS_VOL_GLOB:-/vol*} -mindepth 1 -maxdepth 3 -type d -name "$SHARE" -not -path '*/@*' 2>/dev/null)
+  if [ "${#HITS[@]}" -ne 1 ]; then
+    echo "Found ${#HITS[@]} folders named '$SHARE' under /vol*: ${HITS[*]:-none}. Re-run with --omics-root <path>/database." >&2
+    exit 2
+  fi
+  OMICS="${HITS[0]}/database"
+  echo "Share $SHARE is ${HITS[0]} on the NAS -> database root $OMICS"
+  [ -n "$CLIENT" ] || CLIENT="/Volumes/$SHARE/database"
+fi
+[ -n "$OMICS" ] || { echo "Give --share AI4Sci (auto-detect) or --omics-root /vol1/1000/AI4Sci/database" >&2; exit 2; }
 
 BASE="$HOME/nas-mcp"; SRC="$BASE/src"; VENV="$BASE/.venv"; CONF="$HOME/.config/nas-mcp"
 STATE="$HOME/.local/state/nas-mcp"; A2="$BASE/aria2"
@@ -40,7 +56,7 @@ if [ ! -x "$VENV/bin/python" ]; then
     exit 1
   fi
 fi
-EXTRA=""; [ "$SYN" = 1 ] && EXTRA="[synapse]"
+EXTRA="[inspect]"; [ "$SYN" = 1 ] && EXTRA="[inspect,synapse]"
 if [ -x "$VENV/bin/pip" ]; then "$VENV/bin/pip" install -q --upgrade "$SRC/server$EXTRA"
 else UV=$(command -v uv || echo "$HOME/.local/bin/uv"); "$UV" pip install -q --python "$VENV/bin/python" --upgrade "$SRC/server$EXTRA"; fi
 
@@ -51,7 +67,8 @@ if [ ! -s "$CONF/aria2.secret" ]; then
 fi
 if [ ! -f "$CONF/config.yaml" ]; then
   {
-    echo "omics_root: $OMICS"
+    echo "omics_root: $OMICS            # database root: <SOURCE>/<PROJECT_CODE>/{raw,processed,metadata}"
+    [ -n "$CLIENT" ] && echo "client_root: $CLIENT   # same folder as seen from the Mac (SMB mount)"
     echo "allowed_roots:"; echo "  - $OMICS"; for a in "${ALLOW[@]:-}"; do [ -n "$a" ] && echo "  - $a"; done
     echo "registry: $SRC/datasets/registry.yaml"
     echo "state_dir: $STATE"
@@ -62,6 +79,7 @@ if [ ! -f "$CONF/config.yaml" ]; then
   echo "wrote $CONF/config.yaml"
 else
   echo "keeping existing $CONF/config.yaml"
+  grep -q "^omics_root: $OMICS" "$CONF/config.yaml" || echo "NOTE: existing config has a different omics_root; edit $CONF/config.yaml if you meant to move the database to $OMICS"
 fi
 
 say "aria2 download engine ($A2)"

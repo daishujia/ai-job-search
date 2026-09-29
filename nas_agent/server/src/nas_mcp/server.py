@@ -21,7 +21,10 @@ except ImportError:  # v1.x maintenance line
     from mcp.server.fastmcp import FastMCP as _Server
     from mcp.server.fastmcp.exceptions import ToolError
 
-from . import NasError, jobs, planning, registry, storage, verify
+from . import NasError, ingest, jobs, planning, registry, storage, verify
+from .metadata import index as mindex
+from .metadata import service as msvc
+from .paths import to_client
 from .config import Config, load_config
 from .manifest import Plan
 
@@ -53,7 +56,8 @@ async def _run(fn: Callable[..., Any], *a: Any, **kw: Any) -> str:
 # ------------------------------------------------------------------ storage
 @mcp.tool(name="nas_storage_overview", annotations=RO)
 async def nas_storage_overview() -> str:
-    """Capacity, used and free space for each NAS volume / allowed root (warns above 80% used)."""
+    """Capacity, used and free space for each NAS volume / allowed root (warns above 80% used), plus the
+    database root as the NAS and the Mac see it."""
     return await _run(storage.overview, cfg())
 
 
@@ -97,6 +101,10 @@ async def nas_browse_source(
     return await _run(planning.browse, cfg(), dataset_id, params)
 
 
+LEVELS_FIELD = Field(description="Keep only these data levels: 'raw' (instrument/sequencer output), 'processed' "
+                               "(results, matrices, h5ad), 'metadata' (always included). Default: all.")
+
+
 @mcp.tool(name="nas_plan_dataset", annotations=RO_NET)
 async def nas_plan_dataset(
     dataset_id: Annotated[str, Field(description="Registry id from nas_catalog_search (e.g. 'pride', 'cptac-pdc', 'sea-ad', 'tahoe-100m', 'cellxgene-discover').")],
@@ -106,26 +114,34 @@ async def nas_plan_dataset(
         "s3: {prefix:'MTG/RNAseq/'}; huggingface: {path:'metadata', revision?}; zenodo: {record_id}; "
         "cellxgene: {collection_id} or {disease, tissue, assay}; massive: {accession:'MSV000079514'}; "
         "synapse: {syn_id}; urls: {urls:[...]}."))] = None,
-    dest: Annotated[str | None, Field(description="Destination folder; default is the registry nas_path under the omics root.")] = None,
+    project_code: Annotated[str | None, Field(description="Project sub-folder name. Default comes from the registry template (accession, study id, S3 prefix); required when the template cannot be filled (e.g. DepMap release '24Q4').")] = None,
+    source: Annotated[str | None, Field(description="Source folder name; only for generic entries (open-urls/open-s3/open-hf/open-zenodo), e.g. 'GEO'.")] = None,
+    levels: Annotated[list[Literal["raw", "processed", "metadata"]] | None, LEVELS_FIELD] = None,
     include: Annotated[list[str] | None, Field(description="Glob filters to keep, e.g. ['*.h5ad'] or ['*_MTG_*'].")] = None,
     exclude: Annotated[list[str] | None, Field(description="Glob filters to drop, e.g. ['*.raw'].")] = None,
     max_files: Annotated[int | None, Field(ge=1, description="Keep at most this many files (after filters).")] = None,
 ) -> str:
-    """List what WOULD be downloaded (nothing is transferred): file count, total size, largest files,
-    licence and access policy. Returns a plan_id to pass to nas_submit_plan after the user agrees.
-    Refuses datasets whose registry policy is 'forbidden' (e.g. UK Biobank participant-level, GNPC)."""
+    """List what WOULD be downloaded (nothing is transferred) into <database>/<SOURCE>/<PROJECT_CODE>/
+    {raw,processed,metadata}: file count and size per level, largest files, licence and access policy.
+    Returns a plan_id for nas_submit_plan. Refuses 'forbidden' datasets (UK Biobank participant-level, GNPC)."""
     def go() -> dict:
-        return planning.plan_dataset(cfg(), dataset_id, params, dest, include, exclude, max_files).summary()
+        plan = planning.plan_dataset(cfg(), dataset_id, params, project_code, source, levels, include, exclude, max_files)
+        out = plan.summary()
+        out["dest_client"] = to_client(cfg(), plan.dest) if cfg().client_root else None
+        return out
     return await _run(go)
 
 
 @mcp.tool(name="nas_plan_urls", annotations=RO_NET)
 async def nas_plan_urls(
     urls: Annotated[list, Field(description="URLs (http/https/ftp/sftp) or objects {url, name?, md5?|sha1?|sha256?, size?}.")],
-    dest: Annotated[str, Field(description="Destination folder inside the allowed roots.")],
+    source: Annotated[str, Field(description="Source folder, e.g. 'GEO', 'HPA', 'DepMap', 'Web'.")],
+    project_code: Annotated[str, Field(description="Project sub-folder, e.g. 'GSE157827' or '24Q4'.")],
+    levels: Annotated[list[Literal["raw", "processed", "metadata"]] | None, LEVELS_FIELD] = None,
 ) -> str:
-    """Plan a download of explicit URLs (open data only; the user is responsible for the licence)."""
-    return await _run(lambda: planning.plan_urls(cfg(), urls, dest).summary())
+    """Plan a download of explicit URLs into <database>/<source>/<project_code>/ (open data only; the user is
+    responsible for the licence)."""
+    return await _run(lambda: planning.plan_urls(cfg(), urls, source, project_code, levels).summary())
 
 
 @mcp.tool(name="nas_submit_plan", annotations=WRITE)
@@ -179,6 +195,104 @@ async def nas_verify_job(
     if deep:
         return await _run(verify.start_deep, cfg(), job_id, restart)
     return await _run(verify.run, cfg(), job_id, False)
+
+
+# ------------------------------------------------------------------ metadata & catalog
+PROJECT_FIELD = Field(description="Project as 'SOURCE/PROJECT_CODE' (e.g. 'PRIDE/PXD046444'), or its full path "
+                                  "(Mac path like /Volumes/AI4Sci/database/PRIDE/PXD046444 is accepted).")
+
+
+@mcp.tool(name="nas_extract_metadata",
+          annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+async def nas_extract_metadata(project: Annotated[str, PROJECT_FIELD]) -> str:
+    """Deterministic first pass: build a draft standard metadata record (metadata/study.draft.json) and a samples
+    table (samples.draft.tsv from PDC biospecimens, SDRF files or CELLxGENE datasets) from the saved source
+    records and files on disk. Returns the draft plus 'gaps' = standard fields still empty."""
+    return await _run(msvc.extract_draft, cfg(), project)
+
+
+@mcp.tool(name="nas_inspect_files", annotations=RO)
+async def nas_inspect_files(
+    project: Annotated[str, PROJECT_FIELD],
+    max_files: Annotated[int, Field(ge=1, le=200)] = 30,
+) -> str:
+    """Peek inside a project's metadata/processed files: table headers and categorical values, SDRF
+    characteristics, h5ad obs columns/categories, parquet schema, mzTab metadata, zip listings; plus a
+    per-level inventory. Use it to fill metadata gaps from file content."""
+    return await _run(msvc.inspect_files, cfg(), project, max_files)
+
+
+@mcp.tool(name="nas_lookup_ontology", annotations=RO_NET)
+async def nas_lookup_ontology(
+    terms: Annotated[list[dict], Field(description="[{field, text}], field in organism, tissue, sample_type, cell_type, cell_line, disease, sex, development_stage, ancestry, technology, software, perturbation.")],
+    rows: Annotated[int, Field(ge=1, le=10)] = 3,
+) -> str:
+    """Normalise free text to ontology terms (MONDO, UBERON, CL, NCBITaxon, EFO, PATO, HsapDv, HANCESTRO, MS,
+    ChEBI) via EBI OLS4. Returns ranked candidates {label, id, exact}; choose one or keep label-only."""
+    return await _run(msvc.lookup_terms, terms, None, rows)
+
+
+@mcp.tool(name="nas_save_metadata",
+          annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+async def nas_save_metadata(
+    project: Annotated[str, PROJECT_FIELD],
+    study: Annotated[dict, Field(description="Full ADMS v1.0 study record (start from the draft). Every added/changed field needs curation.field_evidence[<section.field>] = {source, detail, confidence}.")],
+    samples: Annotated[list[dict] | None, Field(description="Sample rows using the standard columns (sample_id required). Omit to keep the draft samples table.")] = None,
+    status: Annotated[Literal["curated", "reviewed"], Field(description="'reviewed' only after the user checked it.")] = "curated",
+) -> str:
+    """Validate against the schema and write metadata/study.json (+ samples.tsv), then update the database
+    index and CATALOG.tsv. Nothing is written if validation fails; errors are returned."""
+    return await _run(msvc.save, cfg(), project, study, samples, True, status)
+
+
+@mcp.tool(name="nas_query_catalog", annotations=RO)
+async def nas_query_catalog(
+    text: Annotated[str, Field(description="Free-text words matched anywhere in the study record.")] = "",
+    organism: str | None = None, disease: str | None = None, tissue: str | None = None,
+    sample_type: str | None = None, cell_type: str | None = None, technology: str | None = None,
+    modality: Annotated[str | None, Field(description="e.g. ms_proteomics, affinity_proteomics, scRNA-seq")] = None,
+    source: str | None = None,
+    status: Annotated[Literal["draft", "curated", "reviewed"] | None, Field()] = None,
+    limit: Annotated[int, Field(ge=1, le=500)] = 50,
+) -> str:
+    """Search the local database of downloaded studies by metadata (label substring or ontology id, e.g.
+    disease='MONDO:0004975' or disease='alzheimer'). Returns paths as seen from the Mac and the NAS."""
+    filters = {"organism": organism, "disease": disease, "tissue": tissue, "sample_type": sample_type,
+               "cell_type": cell_type, "technology": technology, "modality": modality, "source": source, "status": status}
+    return await _run(mindex.query, cfg(), text, filters, limit)
+
+
+@mcp.tool(name="nas_rebuild_catalog",
+          annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+async def nas_rebuild_catalog() -> str:
+    """Rebuild _catalog/catalog.sqlite and CATALOG.tsv from every study.json / study.draft.json on disk."""
+    return await _run(mindex.rebuild, cfg())
+
+
+# ------------------------------------------------------------------ local ingest
+@mcp.tool(name="nas_plan_ingest_local", annotations={**RO, "idempotentHint": False})
+async def nas_plan_ingest_local(
+    path: Annotated[str, Field(description="Existing folder or file on the NAS (inside allowed roots; Mac paths accepted).")],
+    source: Annotated[str, Field(description="Source folder, e.g. 'ADNI', 'GEO', 'Lab'.")],
+    project_code: Annotated[str, Field(description="Project sub-folder, e.g. 'ADNI3-CSF-proteomics'.")],
+    mode: Literal["move", "copy"] = "move",
+    dataset_id: Annotated[str | None, Field(description="Registry id if the data comes from a registered source (applies its access policy).")] = None,
+    level: Annotated[Literal["raw", "processed", "metadata"] | None, Field(description="Force one level for all files; default auto-classifies.")] = None,
+) -> str:
+    """Dry run: show how an existing folder would be organised into <database>/<SOURCE>/<PROJECT>/{raw,processed,
+    metadata} (counts, sizes, examples, conflicts). Nothing is moved until nas_apply_ingest."""
+    return await _run(ingest.plan_ingest, cfg(), path, source, project_code, mode, dataset_id, level)
+
+
+@mcp.tool(name="nas_apply_ingest", annotations=WRITE)
+async def nas_apply_ingest(
+    ingest_id: str,
+    confirm: Annotated[bool, Field(description="Must be true, only after the user approved the plan.")] = False,
+    policy_ack: Annotated[str | None, Field(description="Required when the registry policy is check_dua/summary_only.")] = None,
+) -> str:
+    """Execute an ingest plan (move = same-filesystem rename, copy = duplicate; never overwrites), write
+    files.tsv and draft metadata."""
+    return await _run(ingest.apply_ingest, cfg(), ingest_id, confirm, policy_ack)
 
 
 @mcp.tool(name="nas_downloader_health", annotations=RO)

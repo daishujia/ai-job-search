@@ -30,7 +30,7 @@ def list_files(params: dict, http, cfg) -> Listing:
         chk = (f.get("checksum") or "").lower()
         files.append(FileEntry(
             url=_https(url),
-            relpath=f"{cat}/{f['fileName']}",
+            relpath=f["fileName"],
             size=f.get("fileSizeBytes"),
             size_exact=False,  # PRIDE sizes are indicative (observed mismatches on older projects)
             checksum_type="sha-1" if re.fullmatch(r"[0-9a-f]{40}", chk) else None,
@@ -38,7 +38,7 @@ def list_files(params: dict, http, cfg) -> Listing:
             attrs={"category": cat},
         ))
     lic = project.get("license")
-    return Listing(files=files, meta={
+    return Listing(files=files, record=project, meta={
         "title": project.get("title", "").replace("\n", " ").strip(),
         "license": lic if isinstance(lic, str) else str(lic),
         "source_url": f"https://www.ebi.ac.uk/pride/archive/projects/{acc}",

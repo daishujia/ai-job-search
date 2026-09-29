@@ -7,9 +7,12 @@
 #   forbidden    - analysis must stay inside the provider's enclave; never queue
 # verified: date the access route was checked against the provider's own docs.
 #           Entries without it must be re-checked before first use.
-# nas_path is relative to the omics root chosen at setup (e.g. /vol1/1000/omics); {param} is filled
-#   from connector params. connector names map to nas_mcp/connectors; defaults are merged into the
-#   caller's params and keys in `locked` cannot be overridden.
+# Layout: <database root>/<source_folder>/<project_code>/{raw,processed,metadata}/  (database root =
+#   /Volumes/AI4Sci/database as seen from the Mac). project_code is a template filled from connector
+#   params ({prefix_1}/{prefix_2} = 1st/2nd segment of an S3 prefix, {repo_name} = HF repo name); the
+#   caller can always pass project_code explicitly. source_override lets generic entries name the source.
+# connector names map to nas_mcp/connectors; defaults are merged into the caller's params and keys in
+#   `locked` cannot be overridden.
 
 version: 1
 datasets:
@@ -18,11 +21,12 @@ datasets:
   - id: cptac-pdc
     keywords: cancer tumor proteogenomics phosphoproteomics TMT
     name: CPTAC (Proteomic Data Commons)
+    source_folder: CPTAC-PDC
+    project_code: "{pdc_study_id}"
     modality: MS proteomics + phosphoproteomics (TMT), proteogenomics
     local_download: allowed          # open-access studies; some clinical fields may be controlled
     access: PDC GraphQL API (manifest of signed file URLs) or `cptac` Python package for processed tables
     connector: pdc
-    nas_path: proteomics/cptac/{pdc_study_id}
     notes: Raw files are large; prefer processed tables unless re-processing.
     verified: 2026-09-29
     docs: https://proteomic.datacommons.cancer.gov/pdc/api-documentation
@@ -30,26 +34,29 @@ datasets:
   - id: pride
     keywords: mass spectrometry proteomics raw DIA DDA
     name: PRIDE / ProteomeXchange (PXD accessions)
+    source_folder: PRIDE
+    project_code: "{accession}"
     modality: MS raw + search results
     local_download: allowed
     access: FTP/HTTPS at ftp.pride.ebi.ac.uk/pride/data/archive/YYYY/MM/PXD...; Aspera for bulk
     connector: pride
-    nas_path: proteomics/pride/{accession}
     docs: https://www.ebi.ac.uk/pride/
 
   - id: massive
     name: MassIVE (MSV accessions)
+    source_folder: MassIVE
+    project_code: "{accession}"
     modality: MS raw + reanalyses
     local_download: allowed
     access: FTP massive-ftp.ucsd.edu
     connector: massive
-    nas_path: proteomics/massive/{accession}
     docs: https://massive.ucsd.edu/
 
   # ---------------- Affinity proteomics (Olink / SomaScan) ----------------
   - id: ukb-ppp-individual
     keywords: olink uk biobank plasma population
     name: UK Biobank Pharma Proteomics Project, participant-level Olink Explore 3072
+    source_folder: UKB-PPP
     modality: Olink (~2,900 proteins x ~54k participants)
     local_download: forbidden        # individual-level data cannot be downloaded from UKB-RAP
     access: UKB-RAP (DNAnexus) only; export summary results only
@@ -60,19 +67,21 @@ datasets:
   - id: ukb-ppp-pqtl
     keywords: olink uk biobank pqtl gwas genetics plasma
     name: UKB-PPP pGWAS / pQTL summary statistics (Sun et al., Nature 2023)
+    source_folder: UKB-PPP
+    project_code: "{syn_id}"
     modality: pQTL summary statistics, 2,923 proteins
     local_download: summary_only     # CC BY, controlled-access registration on Synapse / AWS open data
     access: Synapse syn51365301 (synapseclient + personal token) or s3://ukbiobank.opendata.sagebase.org (us-east-1)
     connector: synapse
     defaults: {syn_id: syn51365301}
     locked: [syn_id]
-    nas_path: affinity/ukb-ppp-pqtl
     verified: 2026-09-29
     docs: https://registry.opendata.aws/ukbppp/
 
   - id: gnpc
     keywords: alzheimer parkinson ALS FTD dementia somascan plasma CSF neurodegeneration
     name: Global Neurodegeneration Proteomics Consortium (GNPC) harmonized dataset v1
+    source_folder: GNPC
     modality: SomaScan 7k/5k (+ other platforms); plasma, serum, CSF; AD/PD/FTD/ALS
     local_download: forbidden        # secure access via AD Workbench; exports go through the platform's review
     access: AD Data Initiative - AD Workbench (request access)
@@ -83,43 +92,47 @@ datasets:
   - id: hpa-blood
     keywords: olink plasma blood tissue atlas
     name: Human Protein Atlas - blood/plasma protein resource
+    source_folder: HPA
+    project_code: "{project_code}"
     modality: Olink / MS-derived plasma levels, tissue & single-cell expression
     local_download: allowed
     access: HTTPS downloadable TSVs (proteinatlas.org/about/download)
     connector: urls
-    nas_path: affinity/hpa
 
   # ---------------- AD / PD initiatives ----------------
   - id: amp-ad
     keywords: alzheimer dementia brain proteomics TMT neurodegeneration
     name: AD Knowledge Portal (AMP-AD) - e.g. consensus TMT brain proteomics syn25006611, diverse cohorts syn53420674
+    source_folder: AMP-AD
+    project_code: "{syn_id}"
     modality: brain TMT proteomics, RNA-seq, snRNA-seq, clinical
     local_download: check_dua        # controlled-access Data Use Certificate (syn9890650); download permitted to approved users
     access: synapseclient with personal access token
     connector: synapse
-    nas_path: neuro/amp-ad/{syn_id}
     verified: 2026-09-29
     docs: https://adknowledgeportal.synapse.org/DataAccess/Instructions
 
   - id: amp-pd
     keywords: parkinson PPMI olink somascan CSF plasma neurodegeneration
     name: AMP-PD (incl. PPMI proteomics - Olink Explore, SomaScan 5k CSF, MS)
+    source_folder: AMP-PD
+    project_code: "{project_code}"
     modality: CSF/plasma proteomics, WGS, RNA-seq, clinical
     local_download: check_dua        # tier-2, Terra workspaces + BigQuery; follow AMP-PD safe computing guidelines
     access: Terra / BigQuery (Google account, 2FA); prefer in-platform analysis
     connector: none                  # add a gcloud connector only if the DUA permits local copies
-    nas_path: neuro/amp-pd
     verified: 2026-09-29
     docs: https://amp-pd.org/safe-computing-guidelines
 
   - id: adni
     keywords: alzheimer dementia CSF plasma imaging neurodegeneration
     name: ADNI (incl. CSF/plasma proteomics)
+    source_folder: ADNI
+    project_code: "{project_code}"
     modality: imaging, biomarkers, proteomics, clinical
     local_download: check_dua        # DUA via LONI IDA; annual update required or access expires
     access: LONI IDA web download (manual; no public API)
     connector: manual
-    nas_path: neuro/adni
     verified: 2026-09-29
     docs: https://adni.loni.usc.edu/data-samples/adni-data/
 
@@ -127,13 +140,14 @@ datasets:
   - id: cellxgene-census
     keywords: single cell atlas scRNA-seq
     name: CZ CELLxGENE Discover Census
+    source_folder: CELLxGENE-Census
+    project_code: "{prefix_2}"
     modality: scRNA-seq (standardized, >100M cells), source h5ad per dataset
     local_download: allowed
     access: s3://cellxgene-census-public-us-west-2 (no-sign-request); cellxgene_census Python API for slices
     connector: s3
     defaults: {bucket: cellxgene-census-public-us-west-2, region: us-west-2, prefix: cell-census/}
     locked: [bucket, region]
-    nas_path: singlecell/cellxgene-census
     notes: Full census is multi-TB - pull by tissue/disease slice or specific source h5ads.
     verified: 2026-09-29
     docs: https://chanzuckerberg.github.io/cellxgene-census/cellxgene_census_aws_open_data.html
@@ -141,72 +155,78 @@ datasets:
   - id: sea-ad
     keywords: alzheimer dementia brain single nucleus spatial neurodegeneration
     name: Seattle Alzheimer's Disease Brain Cell Atlas (SEA-AD)
+    source_folder: SEA-AD
+    project_code: "{prefix_1}"
     modality: snRNA-seq, snATAC-seq, spatial (MERFISH), neuropathology
     local_download: allowed
     access: s3://sea-ad-single-cell-profiling (no-sign-request)
     connector: s3
     defaults: {bucket: sea-ad-single-cell-profiling, region: us-west-2}
     locked: [bucket, region]
-    nas_path: singlecell/sea-ad
     verified: 2026-09-29
     docs: https://registry.opendata.aws/allen-sea-ad-atlas/
 
   - id: abc-atlas
     keywords: brain single cell spatial MERFISH mouse human
     name: Allen Brain Cell Atlas
+    source_folder: Allen-ABC-Atlas
+    project_code: "{prefix_2}"
     modality: scRNA-seq + MERFISH, whole brain (mouse, human)
     local_download: allowed
     access: s3://allen-brain-cell-atlas (no account); abc_atlas_access package
     connector: s3
     defaults: {bucket: allen-brain-cell-atlas, region: us-west-2}
     locked: [bucket, region]
-    nas_path: singlecell/abc-atlas
     verified: 2026-09-29
     docs: https://alleninstitute.github.io/abc_atlas_access/intro.html
 
   - id: hca
     keywords: single cell atlas
     name: Human Cell Atlas Data Portal
+    source_folder: HCA
+    project_code: "{project_code}"
     modality: scRNA-seq and multi-omic single cell
     local_download: allowed          # most projects open; a few managed-access
     access: HCA Data Portal file manifests (curl)
     connector: urls
-    nas_path: singlecell/hca
     docs: https://data.humancellatlas.org/
 
   - id: sc-proteomics
     keywords: single cell mass spectrometry
     name: Single-cell MS proteomics (SCoPE2, plexDIA, etc.)
+    source_folder: PRIDE
+    project_code: "{accession}"
     modality: single-cell MS proteomics
     local_download: allowed
     access: via PRIDE/MassIVE accessions (use pride / massive connectors)
     connector: pride
-    nas_path: proteomics/single-cell/{accession}
 
   # ---------------- Phenotypic / perturbation screens ----------------
   - id: tahoe-100m
     keywords: perturbation drug compound single cell phenotypic cancer
     name: Tahoe-100M single-cell perturbation atlas
+    source_folder: Tahoe
+    project_code: "Tahoe-100M"
     modality: scRNA-seq, ~100M cells, 50 cancer lines x ~1,100 compounds
     local_download: allowed          # check dataset card license before commercial use
     access: Hugging Face tahoebio/Tahoe-100M (huggingface-cli download, allow-patterns)
     connector: huggingface
     defaults: {repo: tahoebio/Tahoe-100M, repo_type: dataset}
     locked: [repo]
-    nas_path: phenotypic/tahoe-100m
     verified: 2026-09-29
     docs: https://huggingface.co/datasets/tahoebio/Tahoe-100M
 
   - id: jump-cellpainting
     keywords: phenotypic morphology perturbation CRISPR ORF compound imaging
     name: JUMP Cell Painting / Cell Painting Gallery
+    source_folder: JUMP-CellPainting
+    project_code: "{prefix_1}"
     modality: Cell Painting images + morphological profiles (CRISPR, ORF, compounds)
     local_download: allowed
     access: s3://cellpainting-gallery (no-sign-request)
     connector: s3
     defaults: {bucket: cellpainting-gallery, region: us-east-1}
     locked: [bucket, region]
-    nas_path: phenotypic/cellpainting
     notes: Images are hundreds of TB - default to profiles (parquet), images only by explicit plate list.
     verified: 2026-09-29
     docs: https://broadinstitute.github.io/cellpainting-gallery/download_instructions.html
@@ -214,64 +234,75 @@ datasets:
   - id: scperturb
     keywords: perturbation CRISPR Perturb-seq phenotypic
     name: scPerturb harmonized perturbation datasets
+    source_folder: scPerturb
+    project_code: "zenodo-{record_id}"
     modality: Perturb-seq / CROP-seq / sci-Plex h5ad
     local_download: allowed
     access: Zenodo record (HTTPS)
     connector: zenodo
     defaults: {record_id: "13350497"}   # v1.4 RNA+protein h5ad (54 files, ~43 GB); ATAC files: 7058382
     verified: 2026-09-29
-    nas_path: phenotypic/scperturb
 
   - id: depmap
     keywords: cancer cell line dependency CRISPR proteomics CCLE
     name: DepMap (CRISPR, proteomics, expression)
+    source_folder: DepMap
+    project_code: "{project_code}"
     modality: cell-line dependency + omics incl. CCLE proteomics
     local_download: allowed          # check DepMap terms for commercial use
     access: DepMap portal release files (HTTPS / figshare)
     connector: urls
-    nas_path: phenotypic/depmap
 
   # ---------------- Discovery / generic open-data entries ----------------
   - id: cellxgene-discover
     keywords: single cell alzheimer parkinson disease tissue h5ad
     name: CZ CELLxGENE Discover datasets (per-dataset H5AD via curation API)
+    source_folder: CELLxGENE
+    project_code: "{collection_id}"
     modality: scRNA-seq / snRNA-seq / spatial, curated h5ad per dataset
     local_download: allowed
     access: api.cellxgene.cziscience.com/curation/v1 (collection_id, or disease/tissue/assay filters)
     connector: cellxgene
-    nas_path: singlecell/cellxgene
     notes: e.g. SEA-AD collection 1ca90a2d-2943-483d-b678-b809bf464c30; Parkinson disease; Alzheimer disease
     verified: 2026-09-29
     docs: https://api.cellxgene.cziscience.com/curation/ui/
 
   - id: open-urls
     name: Any openly licensed direct-download URLs
+    source_folder: Web
+    project_code: "{project_code}"
+    source_override: true
     modality: any
     local_download: allowed          # user asserts the data is open; recorded in PROVENANCE.md
     access: http/https/ftp/sftp
     connector: urls
-    nas_path: downloads
 
   - id: open-s3
     name: Any public (no-sign-request) S3 bucket, e.g. AWS Open Data
+    source_folder: S3
+    project_code: "{bucket}"
+    source_override: true
     modality: any
     local_download: allowed
     access: anonymous S3 over HTTPS; params bucket, region, prefix
     connector: s3
-    nas_path: downloads/s3/{bucket}
 
   - id: open-hf
     name: Any public Hugging Face dataset/model repo
+    source_folder: HuggingFace
+    project_code: "{repo_name}"
+    source_override: true
     modality: any
     local_download: allowed
     access: params repo, repo_type, path, revision
     connector: huggingface
-    nas_path: downloads/hf
 
   - id: open-zenodo
     name: Any Zenodo record
+    source_folder: Zenodo
+    project_code: "{record_id}"
+    source_override: true
     modality: any
     local_download: allowed
     access: params record_id
     connector: zenodo
-    nas_path: downloads/zenodo/{record_id}

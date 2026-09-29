@@ -7,12 +7,13 @@ description: Send large file downloads (any URL list, public S3 prefix, Hugging 
 
 Needs the `nas` MCP server.
 
-1. **Destination.**
-   - If the user didn't name a folder, show `nas_list_folders` (depth 2) and ask.
-   - Create a new folder with `nas_create_folder`.
-   - Only folders inside the configured allowed roots can be used. Explain this if a path is refused.
-2. **Plan.** Use `nas_plan_urls(urls, dest)` for plain links, adding `md5`, `sha1` or `sha256` when the
-   source publishes them. For a bucket, repo or record, use `nas_plan_dataset` with `open-s3`,
+1. **Destination.** Everything goes to `/Volumes/AI4Sci/database/<SOURCE>/<PROJECT_CODE>/`, with
+   files sorted into `raw/`, `processed/` and `metadata/`.
+   - Ask for, or derive, the source (e.g. `GEO`, `Zenodo`, `Lab`) and a project code (the source's
+     accession where there is one).
+   - `nas_list_folders` shows what exists.
+2. **Plan.** Use `nas_plan_urls(urls, source, project_code, levels?)` for plain links, adding `md5`,
+   `sha1` or `sha256` when the source publishes them. For a bucket, repo or record, use `nas_plan_dataset` with `open-s3`,
    `open-hf` or `open-zenodo`. Show the file count, size and destination, and confirm with the user.
    Only use these generic entries for data the user is entitled to download. The licence is their call,
    and the plan records it in the provenance file.

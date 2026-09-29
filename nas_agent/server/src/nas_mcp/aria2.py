@@ -28,7 +28,8 @@ class Aria2:
             r = self.client.post(self.url, json=payload)
         except httpx.HTTPError as e:
             raise NasError(f"aria2 RPC unreachable at {self.url} ({e}). Is the aria2 container running? "
-                           "On the NAS: `docker compose -f ~/nas-mcp/src/deploy/aria2/docker-compose.yml up -d`.") from None
+                           "On the NAS: `sudo docker compose -f ~/nas-mcp/aria2/docker-compose.yml up -d` "
+                           "(or `systemctl --user start nas-mcp-aria2` for a --no-docker install).") from None
         d = r.json()
         if "error" in d:
             raise NasError(f"aria2 {method} failed: {d['error'].get('message')}")

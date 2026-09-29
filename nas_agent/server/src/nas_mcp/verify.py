@@ -19,7 +19,7 @@ from . import NasError
 from .config import Config, load_config
 from .jobs import _dir_size, load_job
 from .manifest import Plan, human
-from .paths import safe_relpath
+from .paths import safe_relpath, to_client
 
 HASHERS = {"md5": hashlib.md5, "sha-1": hashlib.sha1, "sha-256": hashlib.sha256}
 
@@ -69,6 +69,7 @@ def write_provenance(cfg: Config, job: dict, plan: Plan, rows: list, summary: di
     total = sum(p.stat().st_size for _, p, _ in rows if p.is_file()) if rows else _dir_size(dest)
     lines = [
         f"# {m.get('title') or plan.dataset_id}", "",
+        f"- **Location:** `{plan.source}/{plan.project_code}`" + (f" — {to_client(cfg, dest)}" if cfg.client_root else ""),
         f"- **Registry id:** `{plan.dataset_id}`  |  **Connector:** `{plan.connector}`",
         f"- **Accession / source:** {m.get('accession', '')} {m.get('source_url', '')}",
         f"- **Version / revision:** {m.get('version') or m.get('revision') or 'n/a'}",
@@ -84,19 +85,32 @@ def write_provenance(cfg: Config, job: dict, plan: Plan, rows: list, summary: di
         lines.append(f"- **Cite:** {m.get('citation') or ''} {m.get('doi') or ''}".rstrip())
     if m.get("notes"):
         lines.append(f"- **Notes:** {m['notes']}")
-    lines += ["", "Per-file checksums and source URLs: `files.tsv`.", ""]
+    lines += ["", "Layout: `raw/` instrument/sequencer output · `processed/` results and matrices · "
+              "`metadata/` study.json, samples.tsv, SDRF, source records.",
+              "Per-file checksums and source URLs: `files.tsv`.", ""]
     (dest / "PROVENANCE.md").write_text("\n".join(lines))
 
-    catalog = cfg.omics_root / "CATALOG.tsv"
-    header = "date\tdataset_id\taccession\ttitle\tpath\tfiles\tbytes\tpolicy\tjob_id\n"
-    existing = catalog.read_text() if catalog.exists() else header
+    log = cfg.catalog_dir / "downloads.tsv"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    header = "date\tdataset_id\tsource\tproject_code\tfiles\tbytes\tpolicy\tjob_id\n"
+    existing = log.read_text() if log.exists() else header
     keep = [l for l in existing.splitlines(keepends=True) if not l.rstrip("\n").endswith("\t" + job["job_id"])]
     if not keep or not keep[0].startswith("date\t"):
         keep.insert(0, header)
-    keep.append(f"{time.strftime('%Y-%m-%d')}\t{plan.dataset_id}\t{m.get('accession', '')}\t"
-                f"{(m.get('title') or '').replace(chr(9), ' ')[:120]}\t{dest}\t{len(rows)}\t{total}\t"
-                f"{plan.policy}\t{job['job_id']}\n")
-    catalog.write_text("".join(keep))
+    keep.append(f"{time.strftime('%Y-%m-%d')}\t{plan.dataset_id}\t{plan.source}\t{plan.project_code}\t{len(rows)}\t"
+                f"{total}\t{plan.policy}\t{job['job_id']}\n")
+    log.write_text("".join(keep))
+
+
+def _post_verify_metadata(cfg: Config, dest: Path) -> dict:
+    """Draft the standard metadata right after a verified download (best effort, never fails verify)."""
+    try:
+        from .metadata.service import extract_draft
+        r = extract_draft(cfg, dest)
+        return {"metadata_draft": r["draft"], "metadata_gaps": r["gaps"], "samples_rows": r["samples_rows"],
+                "next": "Run the study-metadata-curation skill to fill the gaps and save metadata/study.json."}
+    except Exception as e:  # noqa: BLE001
+        return {"metadata_draft": None, "metadata_error": f"{type(e).__name__}: {e}"[:300]}
 
 
 def run(cfg: Config, job_id: str, deep: bool = False) -> dict:
@@ -106,17 +120,52 @@ def run(cfg: Config, job_id: str, deep: bool = False) -> dict:
         if rc != "0":
             raise NasError(f"Job {job_id} has not finished successfully (exit={rc}); see nas_job_status log.")
         plan = Plan.load(cfg, job["plan_id"])
-        summary = {"counts": {"process_exit_0": 1}, "deep": False}
+        moved = organise_incoming(Path(job["dest"]))
+        summary = {"counts": {"process_exit_0": 1, "organised_files": moved}, "deep": False}
         write_provenance(cfg, job, plan, [], summary)
-        return {"job_id": job_id, "result": "ok", **summary, "provenance": str(Path(job["dest"]) / "PROVENANCE.md")}
+        return {"job_id": job_id, "result": "ok", **summary, "provenance": str(Path(job["dest"]) / "PROVENANCE.md"),
+                **_post_verify_metadata(cfg, Path(job["dest"]))}
     res = check_files(cfg, job, deep)
     summary = {"counts": res["counts"], "deep": deep}
     ok = not res["problems"]
+    extra: dict = {}
     if ok:
         write_provenance(cfg, job, res["plan"], res["rows"], summary)
+        if not deep:  # deep runs detached; the fast pass already drafted metadata
+            extra = _post_verify_metadata(cfg, Path(job["dest"]))
     return {"job_id": job_id, "result": "ok" if ok else "problems", **summary,
             "problems": res["problems"][:25],
-            "provenance": str(Path(job["dest"]) / "PROVENANCE.md") if ok else None}
+            "provenance": str(Path(job["dest"]) / "PROVENANCE.md") if ok else None, **extra}
+
+
+def organise_incoming(project: Path) -> int:
+    """Move files a process job (Synapse CLI) wrote into _incoming/ into raw/processed/metadata."""
+    from .layout import classify
+    from .manifest import FileEntry
+    inc = project / "_incoming"
+    if not inc.is_dir():
+        return 0
+    moved = 0
+    for p in sorted(inc.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(inc).as_posix()
+        target = project / classify(FileEntry(url="", relpath=rel)) / rel
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(p, target)
+        moved += 1
+    for d in sorted((d for d in inc.rglob("*") if d.is_dir()), reverse=True):
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+    try:
+        inc.rmdir()
+    except OSError:
+        pass
+    return moved
 
 
 def start_deep(cfg: Config, job_id: str, restart: bool = False) -> dict:

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Copy nas_agent/ to the NAS and run the installer there, from your laptop (macOS/Linux/WSL/Git Bash).
-#   nas_agent/deploy/deploy_from_laptop.sh agent@192.168.86.28 --omics-root /vol1/1000/omics [installer options]
+#   nas_agent/deploy/deploy_from_laptop.sh <you>@192.168.86.28 --share AI4Sci [installer options]
 set -euo pipefail
-TARGET="${1:?usage: $0 user@nas-ip --omics-root PATH [--allow PATH] [--with-synapse] [--install-uv] [--no-docker]}"; shift
+TARGET="${1:?usage: $0 user@nas-ip --share AI4Sci | --omics-root PATH  [--client-root /Volumes/AI4Sci/database] [--allow PATH] [--with-synapse] [--install-uv] [--no-docker]}"; shift
 HERE="$(cd "$(dirname "$0")/.." && pwd)"   # .../nas_agent
 
 echo "==> Checking key-based SSH to $TARGET"

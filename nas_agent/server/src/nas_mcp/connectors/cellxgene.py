@@ -32,10 +32,11 @@ def list_files(params: dict, http, cfg) -> Listing:
         datasets, title, src = http.get_json(f"{API}/datasets"), "CELLxGENE filtered datasets", API
     else:
         raise NasError("Give collection_id, or at least one of disease/tissue/assay/organism/cell_type filters.")
-    files = []
+    files, matched = [], []
     for d in datasets:
         if any(v not in _labels(d.get(k)).lower() for k, v in filters.items()):
             continue
+        matched.append(d)
         for a in d.get("assets", []):
             if a.get("filetype", "").upper() != filetype:
                 continue
@@ -47,7 +48,9 @@ def list_files(params: dict, http, cfg) -> Listing:
                        "cell_count": d.get("cell_count"), "disease": _labels(d.get("disease"))[:200],
                        "tissue": _labels(d.get("tissue"))[:200], "assay": _labels(d.get("assay"))[:200]},
             ))
-    return Listing(files=files, meta={
+    record = ({k: v for k, v in coll.items() if k != "datasets"} if cid else {"filters": filters})
+    record["datasets"] = matched
+    return Listing(files=files, record=record, meta={
         "title": title, "source_url": src, "filters": filters,
         "license": "CC BY 4.0 (CELLxGENE Discover datasets; confirm per collection)",
     })

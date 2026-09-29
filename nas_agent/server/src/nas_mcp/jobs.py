@@ -102,6 +102,7 @@ def submit(cfg: Config, plan: Plan, confirm_large: bool = False, policy_ack: str
             "summary and call again with confirm_large=true only after they agree."
         )
     dest.mkdir(parents=True, exist_ok=True)
+    _save_source_records(plan, dest, policy_ack)
     job = {
         "job_id": plan.plan_id, "plan_id": plan.plan_id, "dataset_id": plan.dataset_id,
         "dest": str(dest), "kind": plan.kind, "policy": plan.policy, "policy_ack": policy_ack,
@@ -128,6 +129,17 @@ def submit(cfg: Config, plan: Plan, confirm_large: bool = False, policy_ack: str
         "free_space_before": human(free), "submit_errors": job.get("submit_errors", [])[:10],
         "next": "Check progress with nas_job_status; when complete run nas_verify_job.",
     }
+
+
+def _save_source_records(plan: Plan, dest: Path, policy_ack: str | None) -> None:
+    """Keep the raw source metadata next to the data; metadata extraction reads it later."""
+    src = dest / "metadata" / "source"
+    src.mkdir(parents=True, exist_ok=True)
+    if plan.record:
+        (src / f"{plan.connector}.json").write_text(json.dumps(plan.record))
+    (src / "_plan.json").write_text(json.dumps({
+        "dataset_id": plan.dataset_id, "connector": plan.connector, "params": plan.params, "policy": plan.policy,
+        "policy_ack": policy_ack, "meta": plan.meta, "plan_id": plan.plan_id, "submitted": time.time()}, default=str))
 
 
 def _start_process(cfg: Config, job: dict, cmd: list[str]) -> None:

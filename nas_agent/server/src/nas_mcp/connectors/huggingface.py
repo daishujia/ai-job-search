@@ -39,7 +39,8 @@ def list_files(params: dict, http, cfg) -> Listing:
             auth="hf" if gated else None,
         ))
     card = info.get("cardData") or {}
-    return Listing(files=files, meta={
+    record = {k: v for k, v in info.items() if k not in ("siblings",)}
+    return Listing(files=files, record=record, meta={
         "title": repo, "revision": sha, "license": card.get("license"),
         "source_url": f"{web}/tree/{sha}", "gated": gated,
     })

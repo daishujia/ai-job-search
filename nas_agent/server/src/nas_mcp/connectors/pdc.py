@@ -30,7 +30,8 @@ def list_files(params: dict, http, cfg) -> Listing:
     pdc_id = require(params, "pdc_study_id", r"PDC\d{6}", "PDC000127")
     wanted = [c for c in params.get("data_categories") or []]
     st = _q(http, f'{{ study(pdc_study_id: "{pdc_id}", acceptDUA: true) '
-                  '{ study_id study_name disease_type primary_site } }')["data"]["study"]
+                  '{ study_id pdc_study_id study_name program_name project_name disease_type primary_site '
+                  'analytical_fraction experiment_type cases_count aliquots_count } }')["data"]["study"]
     if not st:
         raise NasError(f"PDC study {pdc_id} not found.")
     study = st[0]
@@ -71,7 +72,7 @@ def list_files(params: dict, http, cfg) -> Listing:
                 checksum_type="md5" if md5 else None, checksum=md5,
                 attrs={"file_id": f["file_id"], "category": cat},
             ))
-    return Listing(files=files, meta={
+    return Listing(files=files, record={"study": study}, meta={
         "title": study["study_name"], "accession": pdc_id,
         "disease": study.get("disease_type"), "site": study.get("primary_site"),
         "source_url": f"https://pdc.cancer.gov/pdc/study/{pdc_id}",

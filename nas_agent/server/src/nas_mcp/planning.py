@@ -1,38 +1,46 @@
 """Build a Plan from a registry entry (+ connector params) without downloading anything."""
 from __future__ import annotations
 
-from pathlib import Path
-
 from . import NasError
 from . import registry
 from .config import Config
 from .connectors import CONNECTORS, pdc, s3
 from .http import Http
+from .layout import LEVELS, classify, project_location
 from .manifest import Plan, apply_filters, new_plan_id
 from .paths import resolve_dest, safe_relpath
 
 
-def plan_dataset(cfg: Config, dataset_id: str, params: dict | None, dest: str | None,
-                 include: list[str] | None, exclude: list[str] | None, max_files: int | None,
-                 http: Http | None = None) -> Plan:
+def plan_dataset(cfg: Config, dataset_id: str, params: dict | None, project_code: str | None = None,
+                 source: str | None = None, levels: list[str] | None = None, include: list[str] | None = None,
+                 exclude: list[str] | None = None, max_files: int | None = None, http: Http | None = None) -> Plan:
     entry = registry.get(cfg, dataset_id)
     registry.gate(entry)
     merged = registry.merge_params(entry, params)
     conn = entry["connector"]
     if conn not in CONNECTORS:
         raise NasError(f"Registry connector {conn!r} is not implemented.")
-    default_rel = entry.get("nas_path", "").format_map(_Fmt(merged))
-    if not dest and "{" in default_rel:
-        raise NasError(f"Default folder {default_rel!r} needs a parameter that was not given; pass dest explicitly.")
-    target = resolve_dest(cfg, dest, default_rel)  # validate before any network call
+    bad = [lv for lv in levels or [] if lv not in LEVELS]
+    if bad:
+        raise NasError(f"levels must be among {LEVELS}; got {bad}")
+    src, code, project_dir = project_location(cfg, entry, merged, project_code, source)
+    target = resolve_dest(cfg, str(project_dir))  # validate before any network call
     listing = CONNECTORS[conn](merged, http or Http(), cfg)
-    files = apply_filters(listing.files, include, exclude, max_files)
+
+    files = apply_filters(listing.files, include, exclude, None)
+    kept = []
     for f in files:
-        f.relpath = str(safe_relpath(f.relpath))
-    if listing.kind == "aria2" and not files:
-        raise NasError(f"No files matched (listed {len(listing.files)} before filters). Loosen include/exclude.")
+        lv = classify(f, conn)
+        if levels and lv not in levels and lv != "metadata":  # metadata files always come along
+            continue
+        f.relpath = f"{lv}/{safe_relpath(f.relpath)}"
+        kept.append(f)
+    kept = kept[:max_files] if max_files else kept
+    if listing.kind == "aria2" and not kept:
+        raise NasError(f"No files matched (listed {len(listing.files)} before filters). Loosen include/exclude/levels.")
     plan = Plan(plan_id=new_plan_id(), dataset_id=dataset_id, connector=conn, params=merged, dest=str(target),
-                policy=entry["local_download"], files=files, kind=listing.kind, command=listing.command,
+                policy=entry["local_download"], files=kept, kind=listing.kind, command=listing.command,
+                source=src, project_code=code, record=listing.record,
                 meta={**{k: entry.get(k) for k in ("name", "docs")}, **listing.meta,
                       "listed_before_filters": len(listing.files)})
     plan.save(cfg)
@@ -59,11 +67,6 @@ def browse(cfg: Config, dataset_id: str, params: dict | None, http: Http | None 
                    "(it lists without downloading).")
 
 
-class _Fmt(dict):
-    def __missing__(self, key: str) -> str:
-        return "{" + key + "}"
-
-
-def plan_urls(cfg: Config, urls: list, dest: str, http: Http | None = None) -> Plan:
-    plan = plan_dataset(cfg, "open-urls", {"urls": urls}, dest, None, None, None, http)
-    return plan
+def plan_urls(cfg: Config, urls: list, source: str, project_code: str, levels: list[str] | None = None,
+              http: Http | None = None) -> Plan:
+    return plan_dataset(cfg, "open-urls", {"urls": urls}, project_code, source, levels, http=http)

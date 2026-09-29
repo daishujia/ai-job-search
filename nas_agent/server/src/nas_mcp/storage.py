@@ -14,7 +14,15 @@ from .paths import resolve_dest
 SKIP_PREFIXES = (".", "@", "#recycle")
 
 
-def overview(cfg: Config) -> list[dict]:
+def overview(cfg: Config) -> dict:
+    from .paths import to_client
+    return {"database_root": str(cfg.omics_root),
+            "database_root_client": to_client(cfg, cfg.omics_root) if cfg.client_root else None,
+            "layout": "<database>/<SOURCE>/<PROJECT_CODE>/{raw,processed,metadata}",
+            "volumes": _volumes(cfg)}
+
+
+def _volumes(cfg: Config) -> list[dict]:
     seen, rows = set(), []
     candidates = list(cfg.allowed_roots) + sorted(Path("/").glob("vol*"))
     for root in candidates:

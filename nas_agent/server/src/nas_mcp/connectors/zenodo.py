@@ -18,7 +18,7 @@ def list_files(params: dict, http, cfg) -> Listing:
         ))
     md = rec.get("metadata", {})
     lic = md.get("license")
-    return Listing(files=files, meta={
+    return Listing(files=files, record=rec, meta={
         "title": md.get("title"), "license": lic.get("id") if isinstance(lic, dict) else lic,
         "doi": rec.get("doi"), "source_url": rec.get("links", {}).get("html", f"https://zenodo.org/records/{rid}"),
         "version": md.get("version"),

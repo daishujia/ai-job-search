@@ -64,4 +64,5 @@ def list_files(params: dict, http, cfg) -> Listing:
         if root.findtext("s3:IsTruncated", namespaces=NS) != "true":
             break
         token = root.findtext("s3:NextContinuationToken", namespaces=NS)
-    return Listing(files=files, meta={"source_url": f"s3://{bucket}/{prefix}", "region": region})
+    return Listing(files=files, record={"bucket": bucket, "region": region, "prefix": prefix},
+                   meta={"source_url": f"s3://{bucket}/{prefix}", "region": region})

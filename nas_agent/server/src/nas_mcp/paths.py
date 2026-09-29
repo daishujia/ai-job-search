@@ -18,6 +18,23 @@ def _within(path: Path, root: Path) -> bool:
         return False
 
 
+def to_nas(cfg: Config, raw: str) -> str:
+    """Translate a client-side path (e.g. /Volumes/AI4Sci/database/...) to its NAS path."""
+    for client, nas in sorted(cfg.path_aliases.items(), key=lambda kv: -len(kv[0])):
+        if raw == client or raw.startswith(client + "/"):
+            return nas + raw[len(client):]
+    return raw
+
+
+def to_client(cfg: Config, p: str | Path) -> str:
+    """Show a NAS path the way the user's computer sees it (falls back to the NAS path)."""
+    s = str(p)
+    for client, nas in sorted(cfg.path_aliases.items(), key=lambda kv: -len(kv[1])):
+        if s == nas or s.startswith(nas + "/"):
+            return client + s[len(nas):]
+    return s
+
+
 def resolve_dest(cfg: Config, dest: str | None, default_rel: str | None = None) -> Path:
     """Resolve a user/agent-supplied destination. Relative paths are taken under omics_root.
 
@@ -29,7 +46,7 @@ def resolve_dest(cfg: Config, dest: str | None, default_rel: str | None = None) 
         raise NasError("No destination given and the dataset has no default nas_path.")
     if _CTRL.search(raw):
         raise NasError("Destination contains control characters.")
-    p = Path(raw).expanduser()
+    p = Path(to_nas(cfg, raw)).expanduser()
     if not p.is_absolute():
         p = cfg.omics_root / p
     resolved = p.resolve(strict=False)
@@ -56,6 +73,14 @@ def ensure_inside(child: Path, parent: Path) -> Path:
     if not _within(c, parent.resolve(strict=False)):
         raise NasError(f"Refusing to touch {c}: outside {parent}.")
     return c
+
+
+def component(text: str, what: str = "folder name") -> str:
+    """A single safe path component that keeps case (PXD046444, SEA-AD, cpg0016-jump)."""
+    s = re.sub(r"[^A-Za-z0-9._-]+", "_", str(text)).strip("._")
+    if not s or s in (".", ".."):
+        raise NasError(f"Invalid {what}: {text!r}")
+    return s[:120]
 
 
 def slug(text: str, max_len: int = 80) -> str:

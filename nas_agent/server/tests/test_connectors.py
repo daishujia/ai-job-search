@@ -21,7 +21,7 @@ def test_pride(cfg):
     L = pride.list_files({"accession": "PXD046444"}, http, cfg)
     a = L.files[0]
     assert a.url.startswith("https://ftp.pride.ebi.ac.uk/") and a.checksum_type == "sha-1"
-    assert a.relpath == "RAW/a.raw" and a.size_exact is False
+    assert a.relpath == "a.raw" and a.attrs["category"] == "RAW" and a.size_exact is False
     assert L.files[1].checksum is None
     assert len(pride.list_files({"accession": "PXD046444", "categories": ["result"]}, http, cfg).files) == 1
     with pytest.raises(NasError, match="PXD"):
@@ -171,11 +171,16 @@ def test_filters_and_dedupe():
 
 def test_plan_dataset_end_to_end_offline(cfg):
     http = FakeHttp({"/files/all": PRIDE_FILES, "/projects/PXD046444": {"title": "T", "license": "CC0"}})
-    plan = plan_dataset(cfg, "pride", {"accession": "PXD046444"}, None, ["*.raw"], None, None, http=http)
-    assert plan.dest.endswith("omics/proteomics/pride/PXD046444") and len(plan.files) == 1
+    plan = plan_dataset(cfg, "pride", {"accession": "PXD046444"}, include=["*.raw"], http=http)
+    assert plan.dest.endswith("omics/PRIDE/PXD046444") and [f.relpath for f in plan.files] == ["raw/a.raw"]
     s = plan.summary()
     assert s["policy"] == "allowed" and s["sizes_are_estimates"] and s["with_checksum"] == 1
+    assert (s["source"], s["project_code"]) == ("PRIDE", "PXD046444") and s["levels"]["raw"]["files"] == 1
+    both = plan_dataset(cfg, "pride", {"accession": "PXD046444"}, levels=["processed"], http=http)
+    assert [f.relpath for f in both.files] == ["processed/b.mztab"]
     with pytest.raises(NasError, match="No files matched"):
-        plan_dataset(cfg, "pride", {"accession": "PXD046444"}, None, ["*.nothing"], None, None, http=http)
-    with pytest.raises(NasError, match="pass dest"):
-        plan_dataset(cfg, "open-s3", {"prefix": "x"}, None, None, None, None, http=FakeHttp({}))
+        plan_dataset(cfg, "pride", {"accession": "PXD046444"}, include=["*.nothing"], http=http)
+    with pytest.raises(NasError, match="project code"):
+        plan_dataset(cfg, "open-s3", {"prefix": "x"}, http=FakeHttp({}))  # no bucket -> no network call either
+    with pytest.raises(NasError, match="fixed"):
+        plan_dataset(cfg, "pride", {"accession": "PXD046444"}, source="Other", http=http)

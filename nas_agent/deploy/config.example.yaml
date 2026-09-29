@@ -1,8 +1,9 @@
 # ~/.config/nas-mcp/config.yaml on the NAS (install_nas.sh writes this for you).
-omics_root: /vol1/1000/omics              # dataset home; registry nas_path values are relative to this
+omics_root: /vol1/1000/AI4Sci/database   # database root (NAS path): <SOURCE>/<PROJECT_CODE>/{raw,processed,metadata}
+client_root: /Volumes/AI4Sci/database    # the same folder as the Mac sees it; Mac paths are accepted by every tool
 allowed_roots:                            # the ONLY places nas-mcp may read/write
-  - /vol1/1000/omics
-  - /vol1/1000/Downloads
+  - /vol1/1000/AI4Sci/database
+  - /vol1/1000/Downloads                  # e.g. manual downloads to ingest with nas_plan_ingest_local
 registry: ~/nas-mcp/src/datasets/registry.yaml
 state_dir: ~/.local/state/nas-mcp         # plans, jobs, logs
 aria2:

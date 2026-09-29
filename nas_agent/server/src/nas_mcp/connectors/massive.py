@@ -59,5 +59,5 @@ def list_files(params: dict, http, cfg, ftp_factory=ftplib.FTP) -> Listing:
         except Exception:
             pass
     files = [FileEntry(url=f"ftp://{u.hostname}{quote(p)}", relpath=r, size=s) for p, r, s in found]
-    return Listing(files=files, meta={"title": d.get("title"), "accession": acc,
+    return Listing(files=files, record=d, meta={"title": d.get("title"), "accession": acc,
                                       "source_url": f"https://massive.ucsd.edu/ProteoSAFe/QueryMSV?id={acc}"})
